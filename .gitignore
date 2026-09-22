@@ -20,6 +20,10 @@ build/
 .tooling/out-real/
 .tooling/m3src/
 
+# --- Release helper scratch output ---
+# Keep the scripts and the release notes; the local verification dump is regenerated.
+.tooling/release/final-state.txt
+
 # --- Local toolchain, not part of the project ---
 # Extracted Gradle distribution (~294 MB, downloadable from gradle.org).
 .tooling/gradle-*/
