@@ -4,6 +4,7 @@
 # silently disabled the rules below.
 
 .gradle/
+.kotlin/
 .idea/
 local.properties
 build/
