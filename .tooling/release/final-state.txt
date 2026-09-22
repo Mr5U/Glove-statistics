@@ -1,0 +1,13 @@
+repo_language=Kotlin visibility_private=False pushed_at=2026-09-22T17:23:34Z
+main_sha=d27c9031f0e92520fa6cd8f806d4ae7108effc8d tag_sha=d27c9031f0e92520fa6cd8f806d4ae7108effc8d tag_type=commit
+is_latest_release=True
+release_name=缝手套记工 v0.3.0 — 离线计件记工（手套 + 厂房双账本）
+release_name_len=33
+body_len=2176
+body_starts_title=False
+body_contains_app_name=True
+body_has_double_brace_bug=False
+body_tail_last60= [README](https://github.com/Mr5U/Glove-statistics#readme)。\n
+asset=Glove-Statistics-0.3.0-release.apk size=8320024 downloads=0 url=https://github.com/Mr5U/Glove-statistics/releases/download/v0.3.0/Glove-Statistics-0.3.0-release.apk
+anon_release_page_status=200
+anon_asset_head_status=200 len=8320024
