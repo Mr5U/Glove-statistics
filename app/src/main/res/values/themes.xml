@@ -1,0 +1,11 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      浅色主题 + 透明系统栏：Compose 侧用 Material3 默认配色，
+      enableEdgeToEdge 已负责边到边显示，所以状态栏 / 导航栏都设为透明。
+    -->
+    <style name="Theme.GloveStatistics" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

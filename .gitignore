@@ -1,0 +1,30 @@
+# NOTE: keep this file ASCII-only.
+# Windows PowerShell's Set-Content without -Encoding writes ANSI (GBK on this machine),
+# which corrupts non-ASCII characters and can swallow the following newline - that
+# silently disabled the rules below.
+
+.gradle/
+.idea/
+local.properties
+build/
+**/build/
+*.iml
+*.apk
+*.aab
+
+# --- Offline type-check scratch output ---
+# Keep the scripts (.tooling/typecheck.ps1, .tooling/extract-aars.ps1); rebuild the rest.
+.tooling/aarjava/
+.tooling/out-app/
+.tooling/out-real/
+.tooling/m3src/
+
+# --- Local toolchain, not part of the project ---
+# Extracted Gradle distribution (~294 MB, downloadable from gradle.org).
+.tooling/gradle-*/
+.tooling/gradle-*.zip
+
+# --- Signing ---
+# Debug keystore used for the local release build. Its password is the public "android",
+# so it is only good for self-distribution. Do NOT commit a real signing key.
+.tooling/debug.keystore

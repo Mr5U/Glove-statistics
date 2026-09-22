@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用图标：绿色圆角底 + 白色手套轮廓 + 人民币符号。
+  用矢量而不是多套 PNG，是为了把体积压到最小 —— 这一个文件在所有屏幕密度下都清晰。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 底：手套账的识别绿 -->
+    <path
+        android:fillColor="#087B51"
+        android:pathData="M18,0 L90,0 A18,18 0 0 1 108,18 L108,90 A18,18 0 0 1 90,108 L18,108 A18,18 0 0 1 0,90 L0,18 A18,18 0 0 1 18,0 Z" />
+
+    <!-- 手套：从右下袖口起笔，向上绕过四根手指，再回到袖口 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,84 L32,84 A8,8 0 0 1 24,76 L24,54 L31,54 L31,34 A5,5 0 0 1 41,34 L41,31 A5,5 0 0 1 51,31 L51,29 A5,5 0 0 1 61,29 L61,33 A5,5 0 0 1 71,33 L71,60 A10,10 0 0 1 61,70 L59,70 L59,76 A8,8 0 0 1 51,84 L45,84 Z" />
+
+    <!-- 人民币符号 -->
+    <path
+        android:strokeColor="#087B51"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M36,48 L47,62 M58,48 L47,62 M47,62 L47,74" />
+</vector>

@@ -1,0 +1,105 @@
+# Offline type check for this project (real libraries, no hand-written stubs).
+#
+# Why this exists: this machine has no internet access, so `gradlew` cannot resolve
+# dependencies from Maven. But Android Studio's sync populated the Gradle cache with the
+# REAL Compose / androidx artifacts, so we can compile the app sources against those
+# actual libraries - a much stronger check than API stubs.
+#
+# It compiles app/src/main/java against:
+#   * the real androidx/Compose AARs (extracted by extract-aars.ps1)
+#   * the real android.jar for the highest installed android-XX platform
+#   * the real Compose compiler plugin (org.jetbrains.kotlin.plugin.compose equivalent)
+#
+# Keep this file ASCII-only: Windows PowerShell 5.1 reads .ps1 as ANSI unless a UTF-8 BOM
+# is present, which corrupts non-ASCII characters.
+#
+# Usage:  powershell -File .tooling/typecheck.ps1
+# Exit code 0 means the app sources fully compile (frontend + backend) against the real
+# dependency set. It still does NOT prove the APK packages/installs/runs.
+
+$ErrorActionPreference = 'Stop'
+
+$root = Split-Path -Parent $PSScriptRoot
+$m = Join-Path $env:USERPROFILE '.gradle\caches\modules-2\files-2.1'
+
+function Find-Jar([string]$group, [string]$artifact, [string]$version) {
+    $dir = Join-Path (Join-Path $m $group) "$artifact\$version"
+    if (-not (Test-Path $dir)) { return $null }
+    # Skip -sources.jar / -javadoc.jar (no classes in them).
+    $jar = Get-ChildItem $dir -Recurse -Filter '*.jar' |
+        Where-Object { $_.Name -notmatch '-(sources|javadoc)\.jar$' } |
+        Select-Object -First 1
+    if ($null -eq $jar) { return $null }
+    return $jar.FullName
+}
+
+# --- 1. Extract the real library jars from the Gradle cache -------------------
+Write-Host '=== step 1: extract real androidx/Compose jars from cache ===' -ForegroundColor Cyan
+& (Join-Path $PSScriptRoot 'extract-aars.ps1')
+$realJars = Get-ChildItem (Join-Path $PSScriptRoot 'aarjava') -Recurse -Filter '*.jar' |
+    Select-Object -ExpandProperty FullName
+if ($realJars.Count -lt 30) {
+    throw "only $($realJars.Count) library jars extracted - run a Gradle sync in Android Studio first"
+}
+
+# --- 2. Locate the Kotlin compiler + Compose compiler plugin ------------------
+$kotlinVersion = '2.0.21'
+$compilerJars = @(
+    (Find-Jar 'org.jetbrains.kotlin' 'kotlin-compiler-embeddable' $kotlinVersion),
+    (Find-Jar 'org.jetbrains.kotlin' 'kotlin-stdlib' '1.9.23'),
+    (Find-Jar 'org.jetbrains.kotlin' 'kotlin-reflect' '1.9.23'),
+    (Find-Jar 'org.jetbrains.kotlin' 'kotlin-daemon-embeddable' $kotlinVersion),
+    (Find-Jar 'org.jetbrains.intellij.deps' 'trove4j' '1.0.20200330'),
+    (Find-Jar 'org.jetbrains.kotlinx' 'kotlinx-coroutines-core-jvm' '1.6.4'),
+    (Find-Jar 'org.jetbrains' 'annotations' '13.0')
+) | Where-Object { $_ }
+
+$composePlugin = Find-Jar 'org.jetbrains.kotlin' 'kotlin-compose-compiler-plugin-embeddable' $kotlinVersion
+if (-not $composePlugin) {
+    throw "Compose compiler plugin not found in cache; without it @Composable code cannot be code-generated"
+}
+
+# --- 3. Highest installed android-XX platform --------------------------------
+$sdkPlatforms = 'Z:\AiPlayModel\AndroidStudioSDK\platforms'
+$androidJar = Get-ChildItem $sdkPlatforms -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^android-(\d+)' } |
+    Sort-Object { [int]([regex]::Match($_.Name, '^android-(\d+)').Groups[1].Value) } -Descending |
+    ForEach-Object { Join-Path $_.FullName 'android.jar' } |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+if (-not $androidJar) { throw "no android.jar found under $sdkPlatforms" }
+Write-Host "platform jar: $androidJar" -ForegroundColor DarkGray
+
+$libs = @(
+    (Find-Jar 'org.jetbrains.kotlin' 'kotlin-stdlib' '1.9.23'),
+    (Find-Jar 'org.jetbrains.kotlin' 'kotlin-reflect' '1.9.23'),
+    (Find-Jar 'org.jetbrains.kotlinx' 'kotlinx-coroutines-core-jvm' '1.6.4'),
+    $androidJar
+) | Where-Object { $_ }
+
+# --- 4. Compile the app sources ---------------------------------------------
+Write-Host '=== step 2: compile app sources against real libraries ===' -ForegroundColor Cyan
+$appOut = Join-Path $PSScriptRoot 'out-app'
+Remove-Item $appOut -Recurse -Force -ErrorAction SilentlyContinue
+
+$classpath = (($libs + $realJars) -join ';')
+$appSrc = Join-Path $root 'app\src\main\java\com\mr5u\glovestatistics'
+$pluginArg = '-Xplugin=' + $composePlugin
+
+$output = & java -cp ($compilerJars -join ';') org.jetbrains.kotlin.cli.jvm.K2JVMCompiler `
+    -no-stdlib -nowarn -jvm-target 11 -classpath $classpath -d $appOut `
+    $pluginArg $appSrc 2>&1
+$exit = $LASTEXITCODE
+
+$problems = $output | Where-Object { $_ -match 'error:|exception:' }
+if ($problems) { $problems | ForEach-Object { $_ } }
+
+if ($exit -eq 0) {
+    $classes = (Get-ChildItem $appOut -Recurse -Filter '*.class' -ErrorAction SilentlyContinue).Count
+    Write-Host "OK: app sources compile cleanly against the real libraries ($classes classes)" -ForegroundColor Green
+} else {
+    Write-Host 'FAIL: compile errors (see above)' -ForegroundColor Red
+}
+
+Remove-Item $appOut -Recurse -Force -ErrorAction SilentlyContinue
+exit $exit
