@@ -22,6 +22,13 @@
 #     non-English release title is therefore rebuilt from Unicode code points.
 #   * The commit must already be pushed to `main`: the release is created with
 #     target_commitish = main, so the tag is placed on whatever main points at.
+#
+# NOTE: on this machine this script CANNOT work. Both Invoke-RestMethod and
+# curl.exe use Windows Schannel, which fails here with
+# "schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS"
+# (git and Node use OpenSSL and are unaffected). Use the sibling script instead:
+#   $env:GH_TOKEN = '<token from git-credential-manager>'
+#   node .tooling/release/publish-v0.5.0.mjs
 $ErrorActionPreference = 'Stop'
 
 $repo      = 'Mr5U/Glove-statistics'
