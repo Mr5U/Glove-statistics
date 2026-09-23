@@ -5,13 +5,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import com.mr5u.glovestatistics.ReportLayout.attr
 import org.w3c.dom.Element
 import java.io.OutputStream
-import java.time.LocalDate
 import java.time.LocalDateTime
-import java.time.YearMonth
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeParseException
+import java.util.Locale
 import javax.xml.parsers.DocumentBuilderFactory
 import javax.xml.transform.OutputKeys
 import javax.xml.transform.TransformerFactory
@@ -20,45 +19,19 @@ import javax.xml.transform.stream.StreamResult
 import org.xml.sax.InputSource
 import java.io.StringReader
 
-/** PNG 报表要包含哪一部分账。 */
-enum class ReportScope(val label: String) {
-    GLOVE("只导出手套账单"),
-    FACTORY("只导出厂房收入"),
-    ALL("导出全部劳动收入"),
-}
-
-/** 报表里的一行明细，已经按范围筛选好。 */
-private sealed interface ReportRow {
-    data class Home(val date: String, val name: String, val quantity: Int, val price: Double, val amount: Double) : ReportRow
-    data class Factory(val date: String, val amount: Double, val note: String) : ReportRow
-}
-
-/** 单行表格的单元格文本，null 表示该列不参与本表。 */
-private data class TableSpec(
-    val title: String,
-    val headers: List<String>,
-    val weights: List<Float>,
-    val rows: List<List<String>>,
-    val footer: List<String>?,
-    val color: Int,
-)
-
 /**
  * 把月度汇总画成适合在手机上查看 / 分享的统计图。
  *
- * 用固定宽度 1080px，高度按内容行数推算；内容过长时整体等比缩小，
- * 避免超高图片在某些相册或聊天软件里无法预览。
+ * 两张表里的记录都已经**按天合并**过（见 [mergeHomeWork] / [mergeFactoryWork]）：
+ * 同一天同一种手套只会出现一行，数量与收入是当天合计。
+ *
+ * 排版坐标全部来自 [ReportLayout]，这里只负责画。
+ * 表格内容的右边界固定在 [ReportLayout.contentRight]，比画布右边窄 [ReportLayout.PAD_RIGHT]，
+ * 所以最后一列的文字不会再贴到图片边缘。
  */
 object PngReport {
 
-    private const val PAGE_WIDTH = 1080f
     private const val MAX_HEIGHT = 16000f
-
-    private const val PAD = 40f
-    private const val ROW_HEIGHT = 56f
-    private const val HEADER_HEIGHT = 64f
-    private const val TITLE_BAR = 132f
-    private const val DIVIDER = 14f
 
     private val GREEN = Color.rgb(0x08, 0x7B, 0x51)
     private val ORANGE = Color.rgb(0x98, 0x57, 0x00)
@@ -70,125 +43,46 @@ object PngReport {
     private const val FONT = "sans-serif"
     private const val FONT_BOLD = "sans-serif-medium"
 
-    fun render(summary: MonthSummary, scope: ReportScope, generatedAt: LocalDateTime): Bitmap {
-        val layout = plan(summary, scope, generatedAt)
+    private const val PAGE_WIDTH = ReportLayout.PAGE_WIDTH
 
-        val scale = if (layout.height > MAX_HEIGHT) MAX_HEIGHT / layout.height else 1f
+    /** 一张已经算好列边界的表。 */
+    private class Prepared(
+        val spec: ReportLayout.TableSpec,
+        val bounds: List<ClosedFloatingPointRange<Float>>,
+    )
+
+    fun render(summary: MonthSummary, scope: ReportScope, generatedAt: LocalDateTime): Bitmap {
+        val report = ReportLayout.plan(summary, scope)
+
+        // 列边界在这里算一次，下面画表头和每一行时直接复用。
+        val tables = report.blocks.mapNotNull { block ->
+            block.table?.let { Prepared(it, ReportLayout.columns(it.weights)) }
+        }
+        val scale = if (report.height > MAX_HEIGHT) MAX_HEIGHT / report.height else 1f
         val width = (PAGE_WIDTH * scale).toInt().coerceAtLeast(1)
-        val height = (layout.height * scale).toInt().coerceAtLeast(1)
+        val height = (report.height * scale).toInt().coerceAtLeast(1)
 
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.WHITE)
         canvas.save()
         canvas.scale(scale, scale)
-        draw(canvas, layout, summary, scope)
+        draw(canvas, report, tables, summary, scope, generatedAt)
         canvas.restore()
         return bitmap
     }
 
-    // ---------------------------------------------------------------- 排版
-
-    private class Block(val kind: Kind, val table: TableSpec? = null, val lines: List<Pair<String, String>> = emptyList()) {
-        enum class Kind { TABLE, TOTALS, FOOTER }
-        val height: Float
-            get() = when (kind) {
-                Kind.TABLE -> HEADER_HEIGHT * 2 + ROW_HEIGHT * ((table!!.rows.size + if (table.footer != null) 1 else 0).toFloat()) + 24f
-                Kind.TOTALS -> 52f * lines.size + 32f
-                Kind.FOOTER -> 46f * lines.size + 8f
-            }
-    }
-
-    private class Layout(val blocks: List<Block>, val height: Float)
-
-    private fun plan(summary: MonthSummary, scope: ReportScope, generatedAt: LocalDateTime): Layout {
-        val blocks = mutableListOf<Block>()
-
-        if (scope != ReportScope.FACTORY) {
-            val rows = summary.days.flatMap { day ->
-                day.homeRecords.map { ReportRow.Home(it.date, it.gloveName, it.quantity, it.unitPrice, it.income) }
-            }
-            val spec = TableSpec(
-                title = "家里手套计件明细",
-                headers = listOf("日期", "手套种类", "数量", "单价", "收入"),
-                weights = listOf(0.16f, 0.34f, 0.12f, 0.17f, 0.21f),
-                rows = rows.map { listOf(Fmt.monthDay(it.date), it.name, "${it.quantity}", Fmt.money(it.price), Fmt.money(it.amount)) },
-                footer = listOf("合计", "${rows.size} 笔", "${summary.quantity} 双", "", Fmt.money(summary.homeIncome)),
-                color = GREEN,
-            )
-            blocks += Block(Block.Kind.TABLE, table = spec)
-
-            val tallies = summary.byGlove()
-            if (tallies.isNotEmpty()) {
-                blocks += Block(
-                    Block.Kind.TABLE,
-                    table = TableSpec(
-                        title = "各手套种类汇总",
-                        headers = listOf("手套种类", "数量", "收入", "占比"),
-                        weights = listOf(0.40f, 0.18f, 0.24f, 0.18f),
-                        rows = tallies.map {
-                            val share = if (summary.homeIncome > 0) it.income / summary.homeIncome * 100 else 0.0
-                            listOf(it.name, "${it.quantity} 双", Fmt.money(it.income), "${String.format(java.util.Locale.CHINA, "%.1f", share)}%")
-                        },
-                        footer = null,
-                        color = GREEN,
-                    ),
-                )
-            }
-        }
-
-        if (scope != ReportScope.GLOVE) {
-            val rows = summary.days.flatMap { day ->
-                day.factoryRecords.map { ReportRow.Factory(it.date, it.amount, it.note) }
-            }
-            blocks += Block(
-                Block.Kind.TABLE,
-                table = TableSpec(
-                    title = "厂房工作明细（不计入手套账）",
-                    headers = listOf("日期", "收入", "备注"),
-                    weights = listOf(0.18f, 0.22f, 0.60f),
-                    rows = rows.map { listOf(Fmt.monthDay(it.date), Fmt.money(it.amount), it.note.ifBlank { "—" }) },
-                    footer = listOf("合计", Fmt.money(summary.factoryIncome), "${rows.size} 笔"),
-                    color = ORANGE,
-                ),
-            )
-        }
-
-        blocks += Block(
-            Block.Kind.TOTALS,
-            lines = buildList {
-                if (scope != ReportScope.FACTORY) {
-                    add("家里手套收入" to Fmt.yuan(summary.homeIncome))
-                    add("手套总数量 / 干活天数" to "${summary.quantity} 双 / ${summary.homeDays} 天")
-                }
-                if (scope != ReportScope.GLOVE) {
-                    add("厂房工作收入" to Fmt.yuan(summary.factoryIncome))
-                    add("厂房工作天数" to "${summary.factoryDays} 天")
-                }
-                if (scope == ReportScope.ALL) {
-                    add("全部劳动收入" to Fmt.yuan(summary.totalIncome))
-                }
-            },
-        )
-
-        blocks += Block(
-            Block.Kind.FOOTER,
-            lines = listOf(
-                "统计月份：${Fmt.month(summary.month)}" to "",
-                "导出时间：${generatedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))}" to "",
-                "本表由「缝手套记工」在本机离线生成" to "",
-            ),
-        )
-
-        var height = TITLE_BAR
-        blocks.forEach { height += it.height + DIVIDER }
-        height += PAD
-        return Layout(blocks, height)
-    }
-
     // ---------------------------------------------------------------- 绘制
 
-    private fun draw(canvas: Canvas, layout: Layout, summary: MonthSummary, scope: ReportScope) {
+    private fun draw(
+        canvas: Canvas,
+        report: ReportLayout.Report,
+        tables: List<Prepared>,
+        summary: MonthSummary,
+        scope: ReportScope,
+        generatedAt: LocalDateTime,
+    ) {
+        var tableIndex = 0
         val title = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             textSize = 44f
@@ -199,92 +93,170 @@ object PngReport {
             textSize = 26f
             typeface = Typeface.create(FONT, Typeface.NORMAL)
         }
-        canvas.drawRect(0f, 0f, PAGE_WIDTH, TITLE_BAR, Paint().apply { color = GREEN })
-        canvas.drawText("缝手套记工 · 月度统计", PAD, 58f, title)
-        canvas.drawText("${Fmt.month(summary.month)} · ${scope.label}", PAD, 100f, subtitle)
+        canvas.drawRect(0f, 0f, PAGE_WIDTH, ReportLayout.TITLE_BAR, Paint().apply { color = GREEN })
+        val fittedTitle = ReportLayout.fit(
+            "缝手套记工 · 月度统计",
+            maxWidth = ReportLayout.contentRight - ReportLayout.contentLeft,
+            size = 44f,
+            minSize = 30f,
+            measure = { text, size -> measureText(title, text, size) },
+        )
+        title.textSize = fittedTitle.size
+        canvas.drawText(fittedTitle.text, ReportLayout.PAD_LEFT, 58f, title)
+        canvas.drawText(
+            "${Fmt.month(summary.month)} · ${scope.label}",
+            ReportLayout.PAD_LEFT,
+            100f,
+            subtitle,
+        )
 
-        var y = TITLE_BAR + DIVIDER
+        var y = ReportLayout.TITLE_BAR + ReportLayout.DIVIDER
 
         val tableTitle = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = 30f
             typeface = Typeface.create(FONT_BOLD, Typeface.BOLD)
         }
-        val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            textSize = 26f
-            typeface = Typeface.create(FONT_BOLD, Typeface.BOLD)
-        }
         val cellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = INK
-            textSize = 26f
+            textSize = ReportLayout.FONT_SIZE
             typeface = Typeface.create(FONT, Typeface.NORMAL)
+        }
+        val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = ReportLayout.FONT_SIZE
+            typeface = Typeface.create(FONT_BOLD, Typeface.BOLD)
         }
         val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = INK
-            textSize = 27f
+            textSize = ReportLayout.FONT_SIZE
             typeface = Typeface.create(FONT_BOLD, Typeface.BOLD)
         }
         val zebraPaint = Paint().apply { color = ZEBRA }
         val hairlinePaint = Paint().apply { color = HAIRLINE; strokeWidth = 1.5f }
 
-        layout.blocks.forEach { block ->
+        report.blocks.forEach { block ->
             when (block.kind) {
-                Block.Kind.TABLE -> {
-                    val spec = block.table!!
-                    canvas.drawText(spec.title, PAD, y + 34f, tableTitle)
-                    y += 56f
-                    val left = PAD
-                    val right = PAGE_WIDTH - PAD
-                    val tableWidth = right - left
-                    val columns = columnBounds(left, tableWidth, spec.weights)
+                ReportLayout.Block.Kind.TABLE -> {
+                    val prepared = tables[tableIndex++]
+                    val spec = prepared.spec
+                    cellPaint.typeface = Typeface.create(FONT, Typeface.NORMAL)
+                    headerPaint.typeface = Typeface.create(FONT_BOLD, Typeface.BOLD)
+                    footerPaint.typeface = Typeface.create(FONT_BOLD, Typeface.BOLD)
 
-                    canvas.drawRect(left, y, right, y + HEADER_HEIGHT, Paint().apply { color = spec.color })
+                    val fittedTitle = ReportLayout.fit(
+                        spec.title,
+                        maxWidth = ReportLayout.contentRight - ReportLayout.contentLeft,
+                        size = 30f,
+                        minSize = 22f,
+                        measure = { text, size -> measureText(tableTitle, text, size) },
+                    )
+                    tableTitle.textSize = fittedTitle.size
+                    canvas.drawText(fittedTitle.text, ReportLayout.PAD_LEFT, y + 34f, tableTitle)
+                    y += 56f
+
+                    canvas.drawRect(
+                        ReportLayout.contentLeft,
+                        y,
+                        ReportLayout.contentRight,
+                        y + ReportLayout.HEADER_HEIGHT,
+                        Paint().apply { color = if (spec.title.contains("厂房")) ORANGE else GREEN },
+                    )
                     spec.headers.forEachIndexed { index, header ->
-                        val align = if (index == 0 || index == 1) Paint.Align.LEFT else Paint.Align.RIGHT
-                        drawCell(canvas, header, columns[index], align, headerPaint, y + HEADER_HEIGHT / 2f)
+                        drawCell(canvas, header, prepared.bounds[index], spec.aligns[index], headerPaint, y + ReportLayout.HEADER_HEIGHT / 2f)
                     }
-                    y += HEADER_HEIGHT
+                    y += ReportLayout.HEADER_HEIGHT
 
                     if (spec.rows.isEmpty()) {
-                        canvas.drawRect(left, y, right, y + ROW_HEIGHT, zebraPaint)
-                        drawCell(canvas, "本月无记录", columns[0], Paint.Align.LEFT, cellPaint, y + ROW_HEIGHT / 2f)
-                        y += ROW_HEIGHT
+                        canvas.drawRect(
+                            ReportLayout.contentLeft,
+                            y,
+                            ReportLayout.contentRight,
+                            y + ReportLayout.ROW_HEIGHT,
+                            zebraPaint,
+                        )
+                        drawCell(canvas, spec.emptyText, prepared.bounds[0], ReportLayout.Align.LEFT, cellPaint, y + ReportLayout.ROW_HEIGHT / 2f)
+                        y += ReportLayout.ROW_HEIGHT
                     } else {
                         spec.rows.forEachIndexed { index, row ->
-                            if (index % 2 == 1) canvas.drawRect(left, y, right, y + ROW_HEIGHT, zebraPaint)
-                            row.forEachIndexed { column, text ->
-                                val align = if (column == 0 || column == 1) Paint.Align.LEFT else Paint.Align.RIGHT
-                                drawCell(canvas, text, columns[column], align, cellPaint, y + ROW_HEIGHT / 2f)
+                            if (index % 2 == 1) {
+                                canvas.drawRect(
+                                    ReportLayout.contentLeft,
+                                    y,
+                                    ReportLayout.contentRight,
+                                    y + ReportLayout.ROW_HEIGHT,
+                                    zebraPaint,
+                                )
                             }
-                            canvas.drawLine(left, y + ROW_HEIGHT, right, y + ROW_HEIGHT, hairlinePaint)
-                            y += ROW_HEIGHT
+                            row.forEachIndexed { column, text ->
+                                drawCell(canvas, text, prepared.bounds[column], spec.aligns[column], cellPaint, y + ReportLayout.ROW_HEIGHT / 2f)
+                            }
+                            canvas.drawLine(
+                                ReportLayout.contentLeft,
+                                y + ReportLayout.ROW_HEIGHT,
+                                ReportLayout.contentRight,
+                                y + ReportLayout.ROW_HEIGHT,
+                                hairlinePaint,
+                            )
+                            y += ReportLayout.ROW_HEIGHT
                         }
                     }
 
                     spec.footer?.let { footer ->
-                        canvas.drawLine(left, y, right, y, hairlinePaint)
-                        footer.forEachIndexed { column, text ->
-                            val align = if (column == 0 || column == 1) Paint.Align.LEFT else Paint.Align.RIGHT
-                            drawCell(canvas, text, columns[column], align, footerPaint, y + ROW_HEIGHT / 2f)
+                        canvas.drawLine(
+                            ReportLayout.contentLeft,
+                            y,
+                            ReportLayout.contentRight,
+                            y,
+                            hairlinePaint,
+                        )
+                        footer.forEach { cell ->
+                            // 合计行每一格都**显式指定落在哪一列**。
+                            // 老版本是按顺序往窄列里塞，结果「合计 / N 笔」被挤到图片最右边被切掉。
+                            val span = prepared.bounds[cell.columns.first].start..prepared.bounds[cell.columns.last].endInclusive
+                            drawCell(canvas, cell.text, span, cell.align, footerPaint, y + ReportLayout.ROW_HEIGHT / 2f)
                         }
-                        y += ROW_HEIGHT
+                        y += ReportLayout.ROW_HEIGHT
                     }
-                    y += 24f
+                    y += 26f
                 }
 
-                Block.Kind.TOTALS -> {
-                    canvas.drawRect(PAD, y, PAGE_WIDTH - PAD, y + block.height - 16f, Paint().apply { color = Color.rgb(0xF1, 0xF6, 0xF3) })
+                ReportLayout.Block.Kind.TOTALS -> {
+                    canvas.drawRect(
+                        ReportLayout.contentLeft,
+                        y,
+                        ReportLayout.contentRight,
+                        y + block.height - 16f,
+                        Paint().apply { color = Color.rgb(0xF1, 0xF6, 0xF3) },
+                    )
                     var rowY = y + 16f
-                    block.lines.forEachIndexed { index, (label, value) ->
+                    block.lines.forEach { (label, value) ->
                         val paint = if (label == "全部劳动收入") footerPaint else cellPaint
-                        canvas.drawText(label, PAD + 24f, rowY + 34f, paint)
-                        drawRightAligned(canvas, value, PAGE_WIDTH - PAD - 24f, paint, rowY + 34f)
-                        rowY += 52f
+                        val fittedLabel = ReportLayout.fit(
+                            label,
+                            maxWidth = (ReportLayout.contentRight - ReportLayout.contentLeft) * 0.55f,
+                            size = ReportLayout.FONT_SIZE,
+                            measure = { text, size -> measureText(cellPaint, text, size) },
+                        )
+                        paint.textSize = fittedLabel.size
+                        canvas.drawText(fittedLabel.text, ReportLayout.contentLeft + 24f, rowY + 34f, paint)
+
+                        val valueMax = (ReportLayout.contentRight - ReportLayout.contentLeft) * 0.35f
+                        val fittedValue = ReportLayout.fit(
+                            value,
+                            maxWidth = valueMax,
+                            size = ReportLayout.FONT_SIZE,
+                            measure = { text, size -> measureText(paint, text, size) },
+                        )
+                        val right = ReportLayout.contentRight - 24f
+                        paint.textSize = fittedValue.size
+                        canvas.drawText(fittedValue.text, right - paint.measureText(fittedValue.text), rowY + 34f, paint)
+                        paint.textSize = ReportLayout.FONT_SIZE
+                        rowY += 54f
                     }
                     y += block.height
                 }
 
-                Block.Kind.FOOTER -> {
+                ReportLayout.Block.Kind.FOOTER -> {
                     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                         color = MUTED
                         textSize = 22f
@@ -292,71 +264,59 @@ object PngReport {
                     }
                     var rowY = y + 26f
                     block.lines.forEach { (text, _) ->
-                        canvas.drawText(text, PAD, rowY, paint)
+                        canvas.drawText(text, ReportLayout.PAD_LEFT, rowY, paint)
                         rowY += 46f
                     }
                     y += block.height
                 }
             }
-            y += DIVIDER
+            y += ReportLayout.DIVIDER
         }
     }
 
-    /** 把权重换算成每列的左右边界。 */
-    private fun columnBounds(left: Float, width: Float, weights: List<Float>): List<Pair<Float, Float>> {
-        val total = weights.sum()
-        var cursor = left
-        return weights.map { weight ->
-            val next = cursor + width * (weight / total)
-            val bounds = cursor to next
-            cursor = next
-            bounds
-        }
+    /** 复用同一个 [Paint] 测宽，避免每个单元格都新建对象。 */
+    private fun measureText(paint: Paint, text: String, size: Float): Float {
+        paint.textSize = size
+        return paint.measureText(text)
     }
 
+    /** 把文字画进某列的区间里，放不下就先缩字号、再截断，绝不会越过列边界。 */
     private fun drawCell(
         canvas: Canvas,
         text: String,
-        bounds: Pair<Float, Float>,
-        align: Paint.Align,
+        bounds: ClosedFloatingPointRange<Float>,
+        align: ReportLayout.Align,
         paint: Paint,
         centerY: Float,
     ) {
-        val (start, end) = bounds
+        val start = bounds.start + ReportLayout.CELL_INSET
+        val end = bounds.endInclusive - ReportLayout.CELL_INSET
+        val available = end - start
+        if (available <= 0f || text.isEmpty()) return
+
+        val fitted = ReportLayout.fit(
+            text = text,
+            maxWidth = available,
+            size = ReportLayout.FONT_SIZE,
+            measure = { value, size ->
+                paint.textSize = size
+                paint.measureText(value)
+            },
+        )
+        paint.textSize = fitted.size
         val x = when (align) {
-            Paint.Align.LEFT -> start + 12f
-            Paint.Align.RIGHT -> end - 12f
-            else -> (start + end) / 2f
+            ReportLayout.Align.LEFT -> start
+            ReportLayout.Align.RIGHT -> end - paint.measureText(fitted.text)
         }
         val baseline = centerY - (paint.descent() + paint.ascent()) / 2f
-        val available = (end - start) - 24f
-        canvas.drawText(clip(text, paint, available), x, baseline, paint)
-    }
-
-    /** 合计区用的右对齐文字：直接贴着给定的右边界画，不需要列宽。 */
-    private fun drawRightAligned(
-        canvas: Canvas,
-        text: String,
-        right: Float,
-        paint: Paint,
-        centerY: Float,
-    ) {
-        val baseline = centerY - (paint.descent() + paint.ascent()) / 2f
-        canvas.drawText(text, right - paint.measureText(text), baseline, paint)
-    }
-
-    /** 名字过长时截断并加省略号，避免压到相邻列。 */
-    private fun clip(text: String, paint: Paint, maxWidth: Float): String {
-        if (maxWidth <= 0 || paint.measureText(text) <= maxWidth) return text
-        var end = text.length
-        while (end > 1 && paint.measureText(text.substring(0, end) + "…") > maxWidth) end--
-        return text.substring(0, end) + "…"
+        canvas.drawText(fitted.text, x, baseline, paint)
+        paint.textSize = ReportLayout.FONT_SIZE
     }
 }
 
 /** 恢复结果，用于向用户报告失败原因。 */
 sealed interface RestoreResult {
-    data class Success(val gloves: Int, val home: Int, val factory: Int) : RestoreResult
+    data class Success(val gloves: Int, val factoryGloves: Int, val home: Int, val factory: Int) : RestoreResult
     data class Failure(val reason: String) : RestoreResult
 }
 
@@ -365,45 +325,42 @@ sealed interface RestoreResult {
  *
  * 结构刻意保持扁平直观，方便你以后用电脑上的编辑器直接查看或修改：
  * ```xml
- * <gloveStatistics version="1" exportedAt="...">
+ * <gloveStatistics version="2" exportedAt="...">
  *   <gloves><glove name="加绒劳保手套" unitPrice="1.20"/></gloves>
- *   <homeWorks><work date="2026-09-22" gloveName="加绒劳保手套" unitPrice="1.20" quantity="30"/></homeWorks>
- *   <factoryWorks><work date="2026-09-22" amount="180" note="装配线"/></factoryWorks>
+ *   <factoryGloves><glove name="22 公分绿牛" unitPrice="0.26"/></factoryGloves>
+ *   <homeWorks><work date="2026-09-23" gloveName="22 公分绿牛" unitPrice="0.26" quantity="602"/></homeWorks>
+ *   <factoryWorks>
+ *     <work date="2026-09-23" mode="piece" gloveName="22 公分绿牛" quantity="600" unitPrice="0.26" amount="156.00" note=""/>
+ *     <work date="2026-09-23" mode="flat" amount="10" note="打杂"/>
+ *   </factoryWorks>
  * </gloveStatistics>
  * ```
+ *
  * 手套种类与记录之间通过 [gloveName] 关联；记录里同时保存了当天单价快照，
  * 所以即使手套库被清理过，恢复后历史收入也不会变。
+ *
+ * **v1 老备份文件照样能恢复**：`<factoryGloves>` 段缺失就当作空列表，
+ * `<factoryWorks>` 里没有 `mode` / `quantity` 的记录按「整笔收入」还原，金额不会算错。
  */
 object Backup {
 
-    private const val ROOT = "gloveStatistics"
-    private const val VERSION = "1"
-
     fun write(
         output: OutputStream,
-        gloves: List<GloveType>,
-        home: List<HomeWork>,
-        factory: List<FactoryWork>,
+        snapshot: DataSnapshot,
         exportedAt: LocalDateTime,
     ) {
         val document = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument()
-        val root = document.createElement(ROOT)
-        root.setAttribute("version", VERSION)
+        val root = document.createElement(ReportLayout.BACKUP_ROOT)
+        root.setAttribute("version", ReportLayout.BACKUP_VERSION)
         root.setAttribute("exportedAt", exportedAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
         root.setAttribute("app", "Glove-Statistics")
         document.appendChild(root)
 
-        val glovesElement = document.createElement("gloves")
-        gloves.forEach { glove ->
-            glovesElement.appendChild(document.createElement("glove").apply {
-                setAttribute("name", glove.name)
-                setAttribute("unitPrice", number(glove.unitPrice))
-            })
-        }
-        root.appendChild(glovesElement)
+        root.appendChild(glovesElement(document, "gloves", snapshot.gloves))
+        root.appendChild(glovesElement(document, "factoryGloves", snapshot.factoryGloves))
 
         val homeElement = document.createElement("homeWorks")
-        home.forEach { work ->
+        snapshot.home.forEach { work ->
             homeElement.appendChild(document.createElement("work").apply {
                 setAttribute("date", work.date)
                 setAttribute("gloveName", work.gloveName)
@@ -414,11 +371,15 @@ object Backup {
         root.appendChild(homeElement)
 
         val factoryElement = document.createElement("factoryWorks")
-        factory.forEach { work ->
+        snapshot.factory.forEach { work ->
             factoryElement.appendChild(document.createElement("work").apply {
                 setAttribute("date", work.date)
+                setAttribute("mode", work.mode.key)
                 setAttribute("amount", number(work.amount))
                 setAttribute("note", work.note)
+                if (work.gloveName.isNotBlank()) setAttribute("gloveName", work.gloveName)
+                if (work.quantity > 0) setAttribute("quantity", work.quantity.toString())
+                if (work.unitPrice > 0) setAttribute("unitPrice", number(work.unitPrice))
             })
         }
         root.appendChild(factoryElement)
@@ -429,6 +390,19 @@ object Backup {
             setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2")
         }
         transformer.transform(DOMSource(document), StreamResult(output))
+    }
+
+    private fun glovesElement(
+        document: org.w3c.dom.Document,
+        tag: String,
+        gloves: List<GloveType>,
+    ): Element = document.createElement(tag).apply {
+        gloves.forEach { glove ->
+            appendChild(document.createElement("glove").apply {
+                setAttribute("name", glove.name)
+                setAttribute("unitPrice", number(glove.unitPrice))
+            })
+        }
     }
 
     /**
@@ -449,81 +423,67 @@ object Backup {
             return RestoreResult.Failure("文件无法解析：${error.message ?: "格式不正确"}")
         } ?: return RestoreResult.Failure("文件内容为空")
 
-        if (root.tagName != ROOT) {
+        if (root.tagName != ReportLayout.BACKUP_ROOT) {
             return RestoreResult.Failure("这不是「缝手套记工」的备份文件")
         }
 
         return try {
-            val gloves = root.child("gloves").children("glove").mapNotNull { node ->
-                val name = node.attr("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                GloveType(name, node.attr("unitPrice").toDoubleOrNull() ?: 0.0)
-            }
+            val gloves = parseGloves(root, "gloves")
+            val factoryGloves = parseGloves(root, "factoryGloves")
 
-            val home = root.child("homeWorks").children("work").mapNotNull { node ->
-                val date = node.attr("date").takeIf { isIsoDate(it) } ?: return@mapNotNull null
+            val home = ReportLayout.children(ReportLayout.child(root, "homeWorks"), "work").mapNotNull { node ->
+                val date = node.attr("date").takeIf { ReportLayout.isIsoDate(it) } ?: return@mapNotNull null
                 val name = node.attr("gloveName").takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val quantity = node.attr("quantity").toIntOrNull()?.takeIf { it > 0 } ?: return@mapNotNull null
                 HomeWork(date, name, node.attr("unitPrice").toDoubleOrNull() ?: 0.0, quantity)
             }
 
-            val factoryWorks = root.child("factoryWorks").children("work").mapNotNull { node ->
-                val date = node.attr("date").takeIf { isIsoDate(it) } ?: return@mapNotNull null
+            val factoryWorks = ReportLayout.children(ReportLayout.child(root, "factoryWorks"), "work").mapNotNull { node ->
+                val date = node.attr("date").takeIf { ReportLayout.isIsoDate(it) } ?: return@mapNotNull null
                 val amount = node.attr("amount").toDoubleOrNull() ?: return@mapNotNull null
-                FactoryWork(date, amount, node.attr("note"))
+                val quantity = node.attr("quantity").toIntOrNull() ?: 0
+                val gloveName = node.attr("gloveName")
+                // v1 备份没有 mode 属性：有数量和种类就按计件还原，否则按整笔还原。
+                val mode = when {
+                    node.hasAttribute("mode") -> FactoryMode.fromKey(node.attr("mode"))
+                    gloveName.isNotBlank() && quantity > 0 -> FactoryMode.PIECE
+                    else -> FactoryMode.FLAT
+                }
+                FactoryWork(
+                    date = date,
+                    amount = amount,
+                    note = node.attr("note"),
+                    gloveName = gloveName,
+                    quantity = quantity,
+                    unitPrice = node.attr("unitPrice").toDoubleOrNull() ?: 0.0,
+                    mode = mode,
+                )
             }
 
-            if (gloves.isEmpty() && home.isEmpty() && factoryWorks.isEmpty()) {
+            if (gloves.isEmpty() && factoryGloves.isEmpty() && home.isEmpty() && factoryWorks.isEmpty()) {
                 RestoreResult.Failure("文件里没有可恢复的数据")
             } else {
-                pending = Parsed(gloves, home, factoryWorks)
-                RestoreResult.Success(gloves.size, home.size, factoryWorks.size)
+                pending = DataSnapshot(gloves, factoryGloves, home, factoryWorks)
+                RestoreResult.Success(gloves.size, factoryGloves.size, home.size, factoryWorks.size)
             }
         } catch (error: Exception) {
             RestoreResult.Failure("文件内容有误：${error.message ?: "读取失败"}")
         }
     }
 
-    private class Parsed(
-        val gloves: List<GloveType>,
-        val home: List<HomeWork>,
-        val factory: List<FactoryWork>,
-    )
+    private fun parseGloves(root: Element, tag: String): List<GloveType> =
+        ReportLayout.children(ReportLayout.child(root, tag), "glove").mapNotNull { node ->
+            val name = node.attr("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            GloveType(name, node.attr("unitPrice").toDoubleOrNull() ?: 0.0)
+        }
 
     /** [read] 成功后暂存解析结果，由 [takeParsed] 交给 ViewModel 落盘。 */
-    private var pending: Parsed? = null
+    private var pending: DataSnapshot? = null
 
-    fun takeParsed(): Triple<List<GloveType>, List<HomeWork>, List<FactoryWork>>? {
+    fun takeParsed(): DataSnapshot? {
         val parsed = pending ?: return null
         pending = null
-        return Triple(parsed.gloves, parsed.home, parsed.factory)
-    }
-
-    /** 只取直接子节点，避免文件里别处的同名标签被误当成数据。 */
-    private fun Element.child(tag: String): Element? {
-        val nodes = childNodes
-        for (index in 0 until nodes.length) {
-            val node = nodes.item(index)
-            if (node is Element && node.tagName == tag) return node
-        }
-        return null
-    }
-
-    private fun Element?.children(tag: String): List<Element> {
-        if (this == null) return emptyList()
-        val nodes = childNodes
-        return (0 until nodes.length).mapNotNull { index ->
-            (nodes.item(index) as? Element)?.takeIf { it.tagName == tag }
-        }
-    }
-
-    private fun Element.attr(name: String): String = getAttribute(name).orEmpty()
-
-    /** 备份里的日期一律用 ISO 格式（yyyy-MM-dd），非法日期直接跳过该条。 */
-    private fun isIsoDate(value: String): Boolean = try {
-        LocalDate.parse(value)
-        true
-    } catch (_: DateTimeParseException) {
-        false
+        return parsed
     }
 
     private fun number(value: Double): String =

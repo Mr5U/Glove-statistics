@@ -135,7 +135,7 @@ fun CalendarScreen(
         }
 
         item {
-            SectionTitle("⌂ 当天手套记录", "${day.homeRecords.size} 笔", HomeGreen)
+            SectionTitle("⌂ 当天手套记录", "${day.homeRecords.size} 笔（已按种类合并）", HomeGreen)
         }
         if (day.homeRecords.isEmpty()) {
             item { Hint("这天没有手套记录。回到「记工」页可以补录。") }
@@ -155,15 +155,19 @@ fun CalendarScreen(
         item { HorizontalDivider(Modifier.padding(top = 4.dp)) }
 
         item {
-            SectionTitle("▦ 当天厂房记录", "${day.factoryRecords.size} 笔", FactoryOrange)
+            SectionTitle("▦ 当天厂房记录", "${day.factoryRecords.size} 笔（已合并）", FactoryOrange)
         }
         if (day.factoryRecords.isEmpty()) {
             item { Hint("这天没有厂房记录。") }
         } else {
             items(day.factoryRecords) { record ->
                 RecordRow(
-                    title = record.note.ifBlank { "厂房工作" },
-                    subtitle = "独立收入，不计入手套账",
+                    title = if (record.isPiece) record.gloveName else record.note.ifBlank { "厂房工作" },
+                    subtitle = if (record.isPiece) {
+                        "${record.quantity} 双 × ${Fmt.yuan(record.unitPrice)}　·　按件计酬"
+                    } else {
+                        "当天总收入，独立成账"
+                    },
                     amount = record.amount,
                     color = FactoryOrange,
                     onEdit = { editingFactory = record },
@@ -203,9 +207,10 @@ fun CalendarScreen(
     editingFactory?.let { target ->
         EditFactoryDialog(
             record = target,
+            factoryGloveNames = vm.factoryGloves.map { it.name },
             onDismiss = { editingFactory = null },
-            onSave = { amount, note ->
-                vm.updateFactory(target, amount, note)
+            onSave = { updated ->
+                vm.updateFactory(target, updated)
                 editingFactory = null
             },
         )
@@ -225,9 +230,14 @@ fun CalendarScreen(
     }
 
     deletingFactory?.let { target ->
+        val detail = if (target.isPiece) {
+            "${target.gloveName} × ${target.quantity} 双，收入 ${Fmt.yuan(target.amount)}"
+        } else {
+            "收入 ${Fmt.yuan(target.amount)}"
+        }
         ConfirmDialog(
             title = "删除这条厂房记录？",
-            message = "收入 ${Fmt.yuan(target.amount)}。删除后厂房收入合计会同步变化。",
+            message = "$detail。删除后厂房收入合计会同步变化。",
             confirmLabel = "删除",
             onDismiss = { deletingFactory = null },
             onConfirm = {

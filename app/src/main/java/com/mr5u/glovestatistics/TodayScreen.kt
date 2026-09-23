@@ -2,11 +2,8 @@
 
 package com.mr5u.glovestatistics
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,8 +17,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -47,7 +42,12 @@ import java.time.ZoneId
  * 记工首页：先选日期，再分别录入「家里手套」和「厂房工作」。
  *
  * 两类账互不影响，同一天可以只记一类，也可以两类都记。
- * 已保存的当天记录直接列在下方，改和删都交给「记录」页的月历，这里只负责新增。
+ * 厂房有两种记法，可以随手切换：
+ * - **按件计酬**：选厂房手套种类 → 自动带出单价 → 填完成数量，当天收入自动算；
+ * - **当天总收入**：直接填一笔金额，用于打包价、临时工。
+ *
+ * 下方列出的「当天已记」都是**按天合并后**的结果：同一天同一种手套只显示一行，
+ * 数量与收入是当天合计。改和删在「记录」页。
  */
 @Composable
 fun TodayScreen(
@@ -58,15 +58,20 @@ fun TodayScreen(
     var date by remember { mutableStateOf(LocalDate.now()) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showAddGlove by remember { mutableStateOf(false) }
+    var showAddFactoryGlove by remember { mutableStateOf(false) }
 
     var selectedGlove by remember { mutableStateOf<GloveType?>(null) }
     var quantity by remember { mutableStateOf("") }
 
+    var factoryMode by remember { mutableStateOf(FactoryMode.PIECE) }
+    var selectedFactoryGlove by remember { mutableStateOf<GloveType?>(null) }
+    var factoryQuantity by remember { mutableStateOf("") }
     var factoryAmount by remember { mutableStateOf("") }
     var factoryNote by remember { mutableStateOf("") }
 
     // 手套库被改动（新增/改名/删除）后，保持当前选择指向最新的一条。
     val currentGlove = selectedGlove?.let { vm.gloveByName(it.name) }
+    val currentFactoryGlove = selectedFactoryGlove?.let { vm.factoryGloveByName(it.name) }
 
     val day = vm.summaryOfDate(date)
 
@@ -99,6 +104,8 @@ fun TodayScreen(
                     GlovePicker(
                         gloves = vm.gloves,
                         selected = currentGlove,
+                        color = HomeGreen,
+                        emptyLabel = "点这里展开手套库",
                         onSelect = { selectedGlove = it },
                         onCreate = { showAddGlove = true },
                     )
@@ -140,10 +147,10 @@ fun TodayScreen(
         }
 
         if (day.homeRecords.isNotEmpty()) {
-            item { SavedHeader("当天已记的手套", day.homeRecords.size) }
+            item { SavedHeader("当天已记的手套（已按种类合并）", day.homeRecords.size) }
             items(day.homeRecords) { record ->
                 MiniRow(
-                    left = "${record.gloveName} × ${record.quantity} 双",
+                    left = "${record.gloveName} × ${record.quantity} 双 × ${Fmt.yuan(record.unitPrice)}",
                     right = Fmt.yuan(record.income),
                     color = HomeGreen,
                 )
@@ -162,41 +169,119 @@ fun TodayScreen(
 
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = factoryAmount,
-                    onValueChange = { input -> factoryAmount = input.filter { it.isDigit() || it == '.' } },
-                    label = { Text("厂房当天收入（元）") },
-                    singleLine = true,
-                    keyboardOptions = MoneyKeys,
-                    modifier = Modifier.fillMaxWidth(),
+                ModeToggle(
+                    options = FactoryMode.entries.map { it.key to it.label },
+                    selectedKey = factoryMode.key,
+                    onSelect = { factoryMode = FactoryMode.fromKey(it) },
                 )
+
+                when (factoryMode) {
+                    FactoryMode.PIECE -> {
+                        if (vm.factoryGloves.isEmpty()) {
+                            Card(
+                                Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            ) {
+                                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text("厂房手套库还是空的", fontWeight = FontWeight.Medium)
+                                    Hint("先建一个厂房用的手套种类（名称 + 单价），以后记工直接选。")
+                                    Button(
+                                        onClick = { showAddFactoryGlove = true },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(containerColor = FactoryOrange),
+                                    ) { Text("＋ 新建厂房手套种类") }
+                                }
+                            }
+                        } else {
+                            GlovePicker(
+                                gloves = vm.factoryGloves,
+                                selected = currentFactoryGlove,
+                                color = FactoryOrange,
+                                emptyLabel = "点这里展开厂房手套库",
+                                onSelect = { selectedFactoryGlove = it },
+                                onCreate = { showAddFactoryGlove = true },
+                            )
+                        }
+
+                        val picked = currentFactoryGlove
+                        if (picked != null) {
+                            val count = factoryQuantity.toIntOrNull() ?: 0
+                            Text(
+                                "单价 ${Fmt.yuan(picked.unitPrice)} / 双　·　当天收入自动算 ${Fmt.yuan(picked.unitPrice * count)}",
+                                color = FactoryOrange,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+
+                        OutlinedTextField(
+                            value = factoryQuantity,
+                            onValueChange = { factoryQuantity = it.filter(Char::isDigit) },
+                            label = { Text("完成数量（双）") },
+                            singleLine = true,
+                            keyboardOptions = QuantityKeys,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    FactoryMode.FLAT -> {
+                        OutlinedTextField(
+                            value = factoryAmount,
+                            onValueChange = { input -> factoryAmount = input.filter { it.isDigit() || it == '.' } },
+                            label = { Text("厂房当天收入（元）") },
+                            singleLine = true,
+                            keyboardOptions = MoneyKeys,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+
                 OutlinedTextField(
                     value = factoryNote,
                     onValueChange = { factoryNote = it },
                     label = { Text("工作备注（可选）") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+
                 Button(
                     onClick = {
-                        val amount = factoryAmount.toDoubleOrNull() ?: return@Button
-                        if (amount > 0) {
-                            vm.addFactory(date, amount, factoryNote)
-                            factoryAmount = ""
-                            factoryNote = ""
+                        when (factoryMode) {
+                            FactoryMode.PIECE -> {
+                                val picked = currentFactoryGlove ?: return@Button
+                                val count = factoryQuantity.toIntOrNull() ?: return@Button
+                                if (count > 0) {
+                                    vm.addFactoryPiece(date, picked, count, factoryNote)
+                                    factoryQuantity = ""
+                                    factoryNote = ""
+                                }
+                            }
+
+                            FactoryMode.FLAT -> {
+                                val amount = factoryAmount.toDoubleOrNull() ?: return@Button
+                                if (amount > 0) {
+                                    vm.addFactoryFlat(date, amount, factoryNote)
+                                    factoryAmount = ""
+                                    factoryNote = ""
+                                }
+                            }
                         }
                     },
-                    enabled = (factoryAmount.toDoubleOrNull() ?: 0.0) > 0,
+                    enabled = when (factoryMode) {
+                        FactoryMode.PIECE -> currentFactoryGlove != null && (factoryQuantity.toIntOrNull() ?: 0) > 0
+                        FactoryMode.FLAT -> (factoryAmount.toDoubleOrNull() ?: 0.0) > 0
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = FactoryOrange),
-                ) { Text("保存厂房收入") }
+                ) {
+                    Text(if (factoryMode == FactoryMode.PIECE) "保存厂房计件记录" else "保存厂房收入")
+                }
             }
         }
 
         if (day.factoryRecords.isNotEmpty()) {
-            item { SavedHeader("当天已记的厂房", day.factoryRecords.size) }
+            item { SavedHeader("当天已记的厂房（已合并）", day.factoryRecords.size) }
             items(day.factoryRecords) { record ->
                 MiniRow(
-                    left = record.note.ifBlank { "厂房工作" },
+                    left = factoryLine(record),
                     right = Fmt.yuan(record.amount),
                     color = FactoryOrange,
                 )
@@ -216,7 +301,10 @@ fun TodayScreen(
                 } else {
                     "选好上面任意一项，点保存即可开始记录。"
                 }
-                Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                ) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(state, fontWeight = FontWeight.Medium)
                         Text(totals, color = MutedInk, style = MaterialTheme.typography.bodySmall)
@@ -232,11 +320,27 @@ fun TodayScreen(
     if (showAddGlove) {
         GloveDialog(
             initial = null,
+            existing = vm.gloves,
+            title = "手套种类",
             onDismiss = { showAddGlove = false },
             onSave = { name, price ->
                 vm.upsertGlove(previousName = null, name = name, price = price)
                 selectedGlove = vm.gloveByName(name)
                 showAddGlove = false
+            },
+        )
+    }
+
+    if (showAddFactoryGlove) {
+        GloveDialog(
+            initial = null,
+            existing = vm.factoryGloves,
+            title = "厂房手套种类",
+            onDismiss = { showAddFactoryGlove = false },
+            onSave = { name, price ->
+                vm.upsertFactoryGlove(previousName = null, name = name, price = price)
+                selectedFactoryGlove = vm.factoryGloveByName(name)
+                showAddFactoryGlove = false
             },
         )
     }
@@ -258,6 +362,16 @@ fun TodayScreen(
             dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("取消") } },
         ) { DatePicker(state = pickerState) }
     }
+}
+
+/** 厂房记录在列表里的一行说明。计件显示种类与数量，整笔显示备注。 */
+fun factoryLine(record: FactoryWork): String = when {
+    record.isPiece && record.note.isNotBlank() ->
+        "${record.gloveName} × ${record.quantity} 双 × ${Fmt.yuan(record.unitPrice)}　·　${record.note}"
+
+    record.isPiece -> "${record.gloveName} × ${record.quantity} 双 × ${Fmt.yuan(record.unitPrice)}"
+    record.note.isNotBlank() -> "整笔收入　·　${record.note}"
+    else -> "整笔收入"
 }
 
 /** 日期栏：显示当前记录的日期，可切换、可一键回到今天。 */
@@ -290,88 +404,6 @@ private fun DateHeader(
         }
         TextButton(onClick = onPick) { Text("换日期") }
         if (!isToday) TextButton(onClick = onToday) { Text("今天") }
-    }
-}
-
-/** 手套种类选择器。没建过种类时给一条直达新建的入口。 */
-@Composable
-private fun GlovePicker(
-    gloves: List<GloveType>,
-    selected: GloveType?,
-    onSelect: (GloveType) -> Unit,
-    onCreate: () -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    // 刻意不用 ExposedDropdownMenuBox：
-    // 它在 material3 里是 @ExperimentalMaterial3Api，且 Modifier.menuAnchor() 这类 API
-    // 随版本反复改签名（1.4.0 起 menuAnchor 已要求显式传 ExposedDropdownMenuAnchorType，
-    // 旧的 ExposedDropdownMenu 顶层函数也已被改成 scope 成员函数）。
-    // 这里改成最简单的「点卡片 → 弹 DropdownMenu」，用到的都是稳定 API，不受这些变动影响。
-    Box(Modifier.fillMaxWidth()) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = true },
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "选择手套种类",
-                        color = MutedInk,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                    if (selected == null) {
-                        Text("点这里展开手套库", color = MutedInk)
-                    } else {
-                        Text(selected.name, fontWeight = FontWeight.Medium)
-                        Text(
-                            "${Fmt.yuan(selected.unitPrice)} / 双",
-                            color = HomeGreen,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                }
-                // 用文字符号而不是 Icons.Default.ArrowDropDown：
-                // androidx.compose.material:material-icons-core 不再随 material3 传递进来，
-                // 用图标就得额外加依赖，这里没必要。
-                Text("▾", color = MutedInk)
-            }
-        }
-
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            gloves.forEach { glove ->
-                DropdownMenuItem(
-                    text = {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text(glove.name)
-                            Text(Fmt.yuan(glove.unitPrice), color = HomeGreen)
-                        }
-                    },
-                    onClick = {
-                        onSelect(glove)
-                        expanded = false
-                    },
-                )
-            }
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text("＋ 新建手套种类", color = HomeGreen, fontWeight = FontWeight.Medium) },
-                onClick = {
-                    expanded = false
-                    onCreate()
-                },
-            )
-        }
     }
 }
 

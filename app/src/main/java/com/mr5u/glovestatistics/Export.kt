@@ -5,27 +5,16 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import java.io.OutputStream
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
-/** 导出时需要的数据快照：月度汇总 + 用于 XML 的全量数据。 */
-data class ExportSnapshot(
-    val summary: MonthSummary,
-    val gloves: List<GloveType>,
-    val home: List<HomeWork>,
-    val factory: List<FactoryWork>,
-)
-
 /** 导出 / 恢复入口。 */
 interface FileActions {
-    fun exportPng(scope: ReportScope, snapshot: ExportSnapshot)
-    fun exportXml(snapshot: ExportSnapshot)
+    fun exportPng(scope: ReportScope, summary: MonthSummary)
+    fun exportXml(snapshot: DataSnapshot)
     fun pickRestoreFile()
 }
 
@@ -42,40 +31,54 @@ private fun Context.openOutput(uri: Uri): OutputStream =
  * 全部走系统文件选择器（SAF），因此不需要申请任何存储权限，
  * 文件由用户自己决定存到手机本地还是网盘。
  *
+ * 图片与备份分开注册两个选择器：这样 PNG 会用 `image/png` 声明，
+ * 存到相册或直接发微信时不会被当成「未知类型」。
+ *
  * 「创建文件」和「打开文件」两路回调都会先读走 [Holder] 里的待办信息再清空，
  * 这样用户取消选择后不会误触发上一次的动作。
  */
 @Composable
 fun rememberFileActions(
     onMessage: (String) -> Unit,
-    restore: (List<GloveType>, List<HomeWork>, List<FactoryWork>) -> Unit,
+    restore: (DataSnapshot) -> Unit,
 ): FileActions {
     val context = LocalContext.current
 
-    // 最近一次导出请求的快照与范围，随本次组合存活。
+    // 最近一次导出请求的内容，随本次组合存活。
     val holder = remember { Holder() }
 
-    val createFile = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("*/*"),
+    val createPng = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/png"),
     ) { uri ->
-        val kind = holder.creating
-        val data = holder.snapshot
-        val chosenScope = holder.scope
-        holder.creating = null
+        val summary = holder.summary
+        val scope = holder.scope
+        holder.summary = null
+        if (uri == null || summary == null) return@rememberLauncherForActivityResult
+
+        val outcome = runCatching { writePng(context, uri, summary, scope) }
+        onMessage(
+            outcome.fold(
+                onSuccess = { "手套统计图已导出" },
+                onFailure = { "导出失败：${it.message ?: "无法写入所选文件"}" },
+            ),
+        )
+    }
+
+    val createXml = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/xml"),
+    ) { uri ->
+        val snapshot = holder.snapshot
         holder.snapshot = null
-        if (uri == null || kind == null || data == null) return@rememberLauncherForActivityResult
+        if (uri == null || snapshot == null) return@rememberLauncherForActivityResult
 
         val outcome = runCatching {
-            when (kind) {
-                Kind.PNG -> writePng(context, uri, data.summary, chosenScope)
-                Kind.XML -> context.openOutput(uri).use { output ->
-                    Backup.write(output, data.gloves, data.home, data.factory, LocalDateTime.now())
-                }
+            context.openOutput(uri).use { output ->
+                Backup.write(output, snapshot, LocalDateTime.now())
             }
         }
         onMessage(
             outcome.fold(
-                onSuccess = { if (kind == Kind.PNG) "手套统计图已导出" else "备份文件已导出" },
+                onSuccess = { "备份文件已导出" },
                 onFailure = { "导出失败：${it.message ?: "无法写入所选文件"}" },
             ),
         )
@@ -93,36 +96,20 @@ fun rememberFileActions(
             onMessage("无法读取该文件")
             return@rememberLauncherForActivityResult
         }
-
-        when (val result = Backup.read(text)) {
-            is RestoreResult.Success -> {
-                val parsed = Backup.takeParsed()
-                if (parsed == null) {
-                    onMessage("恢复失败：数据未能解析")
-                } else {
-                    restore(parsed.first, parsed.second, parsed.third)
-                    onMessage("已恢复 ${result.gloves} 种手套、${result.home} 条手套记录、${result.factory} 条厂房记录")
-                }
-            }
-
-            is RestoreResult.Failure -> onMessage("恢复失败：${result.reason}")
-        }
+        applyRestore(Backup.read(text), onMessage, restore)
     }
 
-    return remember(createFile, openFile, holder) {
+    return remember(createPng, createXml, openFile, holder) {
         object : FileActions {
-            override fun exportPng(scope: ReportScope, snapshot: ExportSnapshot) {
+            override fun exportPng(scope: ReportScope, summary: MonthSummary) {
                 holder.scope = scope
-                holder.snapshot = snapshot
-                holder.creating = Kind.PNG
-                createFile.launch("缝手套记工-${snapshot.summary.month}-${stamp()}.png")
+                holder.summary = summary
+                createPng.launch("缝手套记工-${summary.month}-${stamp()}.png")
             }
 
-            override fun exportXml(snapshot: ExportSnapshot) {
-                holder.scope = ReportScope.ALL
+            override fun exportXml(snapshot: DataSnapshot) {
                 holder.snapshot = snapshot
-                holder.creating = Kind.XML
-                createFile.launch("缝手套记工-备份-${stamp()}.xml")
+                createXml.launch("缝手套记工-备份-${stamp()}.xml")
             }
 
             override fun pickRestoreFile() {
@@ -132,11 +119,35 @@ fun rememberFileActions(
     }
 }
 
+/** 把解析结果交给 ViewModel 落盘，并把结果翻译成一句提示。 */
+fun applyRestore(
+    result: RestoreResult,
+    onMessage: (String) -> Unit,
+    restore: (DataSnapshot) -> Unit,
+) {
+    when (result) {
+        is RestoreResult.Success -> {
+            val parsed = Backup.takeParsed()
+            if (parsed == null) {
+                onMessage("恢复失败：数据未能解析")
+            } else {
+                restore(parsed)
+                onMessage(
+                    "已恢复 ${result.gloves} 种手套、${result.factoryGloves} 种厂房手套、" +
+                        "${result.home} 条手套记录、${result.factory} 条厂房记录",
+                )
+            }
+        }
+
+        is RestoreResult.Failure -> onMessage("恢复失败：${result.reason}")
+    }
+}
+
 /** 一次导出请求的待办信息。用可变持有者而不是闭包变量，避免对象表达式里引用不到外层局部变量。 */
 private class Holder {
-    var snapshot: ExportSnapshot? = null
+    var summary: MonthSummary? = null
+    var snapshot: DataSnapshot? = null
     var scope: ReportScope = ReportScope.ALL
-    var creating: Kind? = null
 }
 
 /** PNG 渲染 + 压缩写盘。位图用完立刻回收，避免长列表导出占着内存。 */
@@ -152,6 +163,3 @@ private fun writePng(context: Context, uri: Uri, summary: MonthSummary, scope: R
         bitmap.recycle()
     }
 }
-
-/** 当前「创建文件」选择器是为了导出哪一类文件。 */
-private enum class Kind { PNG, XML }

@@ -10,10 +10,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,8 +59,20 @@ private fun GloveApp(vm: WorkViewModel = viewModel<WorkViewModel>()) {
 
     val fileActions = rememberFileActions(
         onMessage = notify,
-        restore = { gloves, home, factory -> vm.replaceAll(gloves, home, factory) },
+        restore = { snapshot -> vm.replaceAll(snapshot) },
     )
+
+    // 覆盖升级后把「继承了多少条数据」明确告诉用户，免得升级完心里没底。
+    // 只在版本号变化后的第一次打开出现，说完就清掉。
+    LaunchedEffect(vm.upgradeReport) {
+        val report = vm.upgradeReport ?: return@LaunchedEffect
+        vm.acknowledgeUpgrade()
+        snackbar.showSnackbar(
+            "已从旧版本继承 ${report.inheritedRecords} 条数据，没有丢失。",
+            withDismissAction = true,
+            duration = SnackbarDuration.Long,
+        )
+    }
 
     Scaffold(
         bottomBar = {
