@@ -19,7 +19,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -37,13 +36,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
-/** 家里手套账的识别色。 */
+/** 手套账的识别色。 */
 val HomeGreen = Color(0xFF087B51)
 
-/** 厂房账的识别色，和绿色刻意拉开，方便日历上一眼区分。 */
-val FactoryOrange = Color(0xFF985700)
-
-/** 未干活 / 次要信息色。 */
+/** 次要信息色。 */
 val MutedInk = Color(0xFF6B7280)
 
 /** 只允许整数输入（数量）。 */
@@ -92,20 +88,7 @@ fun StatCard(
     }
 }
 
-/** 白底中性卡片，用于“全部劳动收入”这类汇总行。 */
-@Composable
-fun TotalRow(label: String, amount: Double, modifier: Modifier = Modifier) = Card(modifier.fillMaxWidth()) {
-    Row(
-        Modifier.fillMaxWidth().padding(16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, fontWeight = FontWeight.Bold)
-        Text(Fmt.yuan(amount), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-    }
-}
-
-/** 日历格子上表示“当天有哪类活”的小圆点。 */
+/** 日历格子上表示“当天有记录”的小圆点。 */
 @Composable
 fun Dot(color: Color) = Box(Modifier.size(7.dp).background(color, CircleShape))
 
@@ -185,35 +168,9 @@ fun MonthSwitcher(
 }
 
 /**
- * 两选一的模式切换（计件 / 整笔）。
- *
- * 用 FilterChip 而不是 SegmentedButton：后者在 material3 里是实验 API，
- * 这里两个选项用两个等宽 chip 视觉上一样，但不吃实验性注解。
- */
-@Composable
-fun ModeToggle(
-    options: List<Pair<String, String>>,
-    selectedKey: String,
-    onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) = Row(
-    modifier.fillMaxWidth(),
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
-) {
-    options.forEach { (key, label) ->
-        FilterChip(
-            selected = key == selectedKey,
-            onClick = { onSelect(key) },
-            label = { Text(label) },
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-/**
  * 手套种类选择器：点卡片弹出下拉，底部固定一条「新建手套种类」入口。
  *
- * 家里和厂房各有一套手套库，所以颜色、标题都由调用方给。
+ * 颜色、标题由调用方给，方便在记工页与手套库页复用。
  */
 @Composable
 fun GlovePicker(
@@ -488,157 +445,6 @@ fun EditHomeDialog(
             TextButton(
                 enabled = valid,
                 onClick = { onSave(name.trim(), parsedPrice ?: 0.0, parsedQuantity ?: 0) },
-            ) { Text("保存") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-}
-
-/**
- * 修改一条厂房记录：可以在「按件计酬」和「当天总收入」之间任意切换。
- *
- * 切换模式时两种输入都留着（[pieceQuantity] / [flatAmount] 各自独立），
- * 所以来回切换不会把已经填好的数字清掉。
- */
-@Composable
-fun EditFactoryDialog(
-    record: FactoryWork,
-    factoryGloveNames: List<String>,
-    onDismiss: () -> Unit,
-    onSave: (FactoryWork) -> Unit,
-) {
-    var mode by remember { mutableStateOf(record.mode) }
-    var gloveName by remember { mutableStateOf(record.gloveName) }
-    var unitPrice by remember { mutableStateOf(if (record.unitPrice > 0) Fmt.money(record.unitPrice) else "") }
-    var pieceQuantity by remember {
-        mutableStateOf(if (record.isPiece && record.quantity > 0) record.quantity.toString() else "")
-    }
-    var flatAmount by remember { mutableStateOf(Fmt.money(record.amount)) }
-    var note by remember { mutableStateOf(record.note) }
-    val chipScroll = rememberScrollState()
-
-    val parsedPrice = unitPrice.toDoubleOrNull()
-    val parsedQuantity = pieceQuantity.toIntOrNull()
-    val parsedAmount = flatAmount.toDoubleOrNull()
-
-    val valid = when (mode) {
-        FactoryMode.PIECE ->
-            gloveName.isNotBlank() && parsedPrice != null && parsedPrice >= 0 &&
-                parsedQuantity != null && parsedQuantity > 0
-
-        FactoryMode.FLAT -> parsedAmount != null && parsedAmount > 0
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("修改厂房记录") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                ModeToggle(
-                    options = FactoryMode.entries.map { it.key to it.label },
-                    selectedKey = mode.key,
-                    onSelect = { mode = FactoryMode.fromKey(it) },
-                )
-
-                when (mode) {
-                    FactoryMode.PIECE -> {
-                        OutlinedTextField(
-                            value = gloveName,
-                            onValueChange = { gloveName = it },
-                            label = { Text("手套种类") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        if (factoryGloveNames.isNotEmpty()) {
-                            Row(
-                                Modifier.fillMaxWidth().horizontalScroll(chipScroll),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                factoryGloveNames.forEach { candidate ->
-                                    Card(
-                                        modifier = Modifier.clickable { gloveName = candidate },
-                                        colors = CardDefaults.cardColors(
-                                            containerColor = if (candidate == gloveName) {
-                                                FactoryOrange.copy(alpha = 0.15f)
-                                            } else {
-                                                MaterialTheme.colorScheme.surfaceVariant
-                                            },
-                                        ),
-                                        shape = RoundedCornerShape(8.dp),
-                                    ) { Text(candidate, Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) }
-                                }
-                            }
-                        }
-                        OutlinedTextField(
-                            value = unitPrice,
-                            onValueChange = { unitPrice = it.filter { ch -> ch.isDigit() || ch == '.' } },
-                            label = { Text("当天单价（元 / 双）") },
-                            singleLine = true,
-                            keyboardOptions = MoneyKeys,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        OutlinedTextField(
-                            value = pieceQuantity,
-                            onValueChange = { pieceQuantity = it.filter(Char::isDigit) },
-                            label = { Text("完成数量（双）") },
-                            singleLine = true,
-                            keyboardOptions = QuantityKeys,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Hint(
-                            "收入自动算：${Fmt.yuan((parsedPrice ?: 0.0) * (parsedQuantity ?: 0))}",
-                        )
-                    }
-
-                    FactoryMode.FLAT -> {
-                        OutlinedTextField(
-                            value = flatAmount,
-                            onValueChange = { flatAmount = it.filter { ch -> ch.isDigit() || ch == '.' } },
-                            label = { Text("当天收入（元）") },
-                            singleLine = true,
-                            keyboardOptions = MoneyKeys,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("工作备注（可选）") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = valid,
-                onClick = {
-                    val updated = when (mode) {
-                        FactoryMode.PIECE -> {
-                            val price = parsedPrice ?: 0.0
-                            val quantity = parsedQuantity ?: 0
-                            record.copy(
-                                amount = price * quantity,
-                                note = note.trim(),
-                                gloveName = gloveName.trim(),
-                                quantity = quantity,
-                                unitPrice = price,
-                                mode = FactoryMode.PIECE,
-                            )
-                        }
-
-                        FactoryMode.FLAT -> record.copy(
-                            amount = parsedAmount ?: 0.0,
-                            note = note.trim(),
-                            gloveName = "",
-                            quantity = 0,
-                            unitPrice = 0.0,
-                            mode = FactoryMode.FLAT,
-                        )
-                    }
-                    onSave(updated)
-                },
             ) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },

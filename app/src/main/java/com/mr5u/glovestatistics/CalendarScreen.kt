@@ -17,10 +17,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,8 +39,8 @@ private val WEEK_LABELS = listOf("一", "二", "三", "四", "五", "六", "日"
 /**
  * 记录页：一整月的月历，把「干了什么活」直接标在日期上。
  *
- * 绿色圆点＝当天在家做手套，橙色圆点＝当天去了厂房，两个都有＝那天两头都干了；
- * 一个点都没有的日期就是「未干活」。点某一天可以在下方展开当天明细，并修改或删除。
+ * 绿色圆点＝当天在家做手套，一个点都没有的日期就是「未干活」。
+ * 点某一天可以在下方展开当天明细，并修改或删除。
  */
 @Composable
 fun CalendarScreen(
@@ -52,9 +50,7 @@ fun CalendarScreen(
     var month by remember { mutableStateOf(YearMonth.now()) }
     var selected by remember { mutableStateOf(LocalDate.now()) }
     var editingHome by remember { mutableStateOf<HomeWork?>(null) }
-    var editingFactory by remember { mutableStateOf<FactoryWork?>(null) }
     var deletingHome by remember { mutableStateOf<HomeWork?>(null) }
-    var deletingFactory by remember { mutableStateOf<FactoryWork?>(null) }
 
     val summary = vm.summaryOf(month)
     val byDate = summary.days.associateBy { it.date }
@@ -110,7 +106,6 @@ fun CalendarScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Legend(HomeGreen, "家里手套")
-                        Legend(FactoryOrange, "厂房工作")
                         Text("无圆点＝未干活", color = MutedInk, style = MaterialTheme.typography.labelMedium)
                     }
                 }
@@ -125,7 +120,7 @@ fun CalendarScreen(
                         Hint("这天没有记录，也就是「未干活」。")
                     } else {
                         Text(
-                            "手套 ${Fmt.yuan(day.homeIncome)}　·　厂房 ${Fmt.yuan(day.factoryIncome)}　·　合计 ${Fmt.yuan(day.totalIncome)}",
+                            "共 ${day.quantity} 双　·　${Fmt.yuan(day.homeIncome)}",
                             color = MutedInk,
                             style = MaterialTheme.typography.bodyMedium,
                         )
@@ -152,30 +147,6 @@ fun CalendarScreen(
             }
         }
 
-        item { HorizontalDivider(Modifier.padding(top = 4.dp)) }
-
-        item {
-            SectionTitle("▦ 当天厂房记录", "${day.factoryRecords.size} 笔（已合并）", FactoryOrange)
-        }
-        if (day.factoryRecords.isEmpty()) {
-            item { Hint("这天没有厂房记录。") }
-        } else {
-            items(day.factoryRecords) { record ->
-                RecordRow(
-                    title = if (record.isPiece) record.gloveName else record.note.ifBlank { "厂房工作" },
-                    subtitle = if (record.isPiece) {
-                        "${record.quantity} 双 × ${Fmt.yuan(record.unitPrice)}　·　按件计酬"
-                    } else {
-                        "当天总收入，独立成账"
-                    },
-                    amount = record.amount,
-                    color = FactoryOrange,
-                    onEdit = { editingFactory = record },
-                    onDelete = { deletingFactory = record },
-                )
-            }
-        }
-
         item {
             Card(
                 Modifier.fillMaxWidth(),
@@ -184,7 +155,7 @@ fun CalendarScreen(
                 Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("本月合计", fontWeight = FontWeight.Medium)
                     Text(
-                        "${summary.workedDays} 天有记录　·　${Fmt.yuan(summary.totalIncome)}",
+                        "${summary.workedDays} 天有记录　·　${Fmt.yuan(summary.homeIncome)}",
                         fontWeight = FontWeight.Medium,
                     )
                 }
@@ -204,18 +175,6 @@ fun CalendarScreen(
         )
     }
 
-    editingFactory?.let { target ->
-        EditFactoryDialog(
-            record = target,
-            factoryGloveNames = vm.factoryGloves.map { it.name },
-            onDismiss = { editingFactory = null },
-            onSave = { updated ->
-                vm.updateFactory(target, updated)
-                editingFactory = null
-            },
-        )
-    }
-
     deletingHome?.let { target ->
         ConfirmDialog(
             title = "删除这条手套记录？",
@@ -225,24 +184,6 @@ fun CalendarScreen(
             onConfirm = {
                 vm.deleteHome(target)
                 deletingHome = null
-            },
-        )
-    }
-
-    deletingFactory?.let { target ->
-        val detail = if (target.isPiece) {
-            "${target.gloveName} × ${target.quantity} 双，收入 ${Fmt.yuan(target.amount)}"
-        } else {
-            "收入 ${Fmt.yuan(target.amount)}"
-        }
-        ConfirmDialog(
-            title = "删除这条厂房记录？",
-            message = "$detail。删除后厂房收入合计会同步变化。",
-            confirmLabel = "删除",
-            onDismiss = { deletingFactory = null },
-            onConfirm = {
-                vm.deleteFactory(target)
-                deletingFactory = null
             },
         )
     }
@@ -320,8 +261,7 @@ private fun DayCell(
             fontWeight = if (isToday || isSelected) FontWeight.Bold else FontWeight.Normal,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            if (summary?.workedAtHome == true) Dot(HomeGreen)
-            if (summary?.workedAtFactory == true) Dot(FactoryOrange)
+            if (summary?.worked == true) Dot(HomeGreen)
         }
     }
 }

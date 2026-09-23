@@ -13,7 +13,7 @@ import java.time.format.DateTimeFormatter
 
 /** 导出 / 恢复入口。 */
 interface FileActions {
-    fun exportPng(scope: ReportScope, summary: MonthSummary)
+    fun exportPng(summary: MonthSummary)
     fun exportXml(snapshot: DataSnapshot)
     fun pickRestoreFile()
 }
@@ -51,14 +51,13 @@ fun rememberFileActions(
         ActivityResultContracts.CreateDocument("image/png"),
     ) { uri ->
         val summary = holder.summary
-        val scope = holder.scope
         holder.summary = null
         if (uri == null || summary == null) return@rememberLauncherForActivityResult
 
-        val outcome = runCatching { writePng(context, uri, summary, scope) }
+        val outcome = runCatching { writePng(context, uri, summary) }
         onMessage(
             outcome.fold(
-                onSuccess = { "手套统计图已导出" },
+                onSuccess = { "手套计件明细图已导出" },
                 onFailure = { "导出失败：${it.message ?: "无法写入所选文件"}" },
             ),
         )
@@ -101,8 +100,7 @@ fun rememberFileActions(
 
     return remember(createPng, createXml, openFile, holder) {
         object : FileActions {
-            override fun exportPng(scope: ReportScope, summary: MonthSummary) {
-                holder.scope = scope
+            override fun exportPng(summary: MonthSummary) {
                 holder.summary = summary
                 createPng.launch("缝手套记工-${summary.month}-${stamp()}.png")
             }
@@ -132,10 +130,7 @@ fun applyRestore(
                 onMessage("恢复失败：数据未能解析")
             } else {
                 restore(parsed)
-                onMessage(
-                    "已恢复 ${result.gloves} 种手套、${result.factoryGloves} 种厂房手套、" +
-                        "${result.home} 条手套记录、${result.factory} 条厂房记录",
-                )
+                onMessage("已恢复 ${result.gloves} 种手套、${result.home} 条手套记录")
             }
         }
 
@@ -147,12 +142,11 @@ fun applyRestore(
 private class Holder {
     var summary: MonthSummary? = null
     var snapshot: DataSnapshot? = null
-    var scope: ReportScope = ReportScope.ALL
 }
 
 /** PNG 渲染 + 压缩写盘。位图用完立刻回收，避免长列表导出占着内存。 */
-private fun writePng(context: Context, uri: Uri, summary: MonthSummary, scope: ReportScope) {
-    val bitmap = PngReport.render(summary, scope, LocalDateTime.now())
+private fun writePng(context: Context, uri: Uri, summary: MonthSummary) {
+    val bitmap = PngReport.render(summary)
     try {
         context.openOutput(uri).use { output ->
             if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output)) {

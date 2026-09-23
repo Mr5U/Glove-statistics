@@ -1,13 +1,9 @@
 package check
 
 import com.mr5u.glovestatistics.DaySummary
-import com.mr5u.glovestatistics.FactoryMode
-import com.mr5u.glovestatistics.FactoryWork
 import com.mr5u.glovestatistics.HomeWork
 import com.mr5u.glovestatistics.MonthSummary
 import com.mr5u.glovestatistics.ReportLayout
-import com.mr5u.glovestatistics.ReportScope
-import com.mr5u.glovestatistics.mergeFactoryWork
 import com.mr5u.glovestatistics.mergeHomeWork
 import com.mr5u.glovestatistics.summarize
 import com.mr5u.glovestatistics.summarizeDay
@@ -20,8 +16,9 @@ import java.time.YearMonth
  *
  * 覆盖三件容易出错、又没法靠眼睛看出来的事：
  *  1. 同一天重复记录合并后的数量 / 金额是否正确；
- *  2. 厂房两种模式（计件 / 整笔）算出来的钱对不对；
- *  3. 报表里每一列的文字会不会越过列边界（老版本「右边被截断」就是这里出的问题）。
+ *  2. 月度统计（数量 / 收入 / 干活天数）是否与记录一致；
+ *  3. 报表里每一列的文字会不会越过列边界（老版本「右边被截断」就是这里出的问题），
+ *     以及导出的图是不是「只有家里手套计件明细这一张表」。
  */
 object DomainCheck {
 
@@ -40,11 +37,11 @@ object DomainCheck {
     @JvmStatic
     fun main(args: Array<String>) {
         mergeHome()
-        mergeFactory()
         summarizeFlow()
-        legacyParsing()
+        parsing()
         storageRoundTrip()
         reportFits()
+        reportHasOnlyDetailTable()
         println("ALL PASS ($passed 项断言)")
     }
 
@@ -75,31 +72,8 @@ object DomainCheck {
         val trickyParsed = ReportLayout.parseHomeLine(trickyLine, "|", decode)
         eq(tricky, trickyParsed?.gloveName, "含特殊字符的手套名应原样还原")
 
-        // v0.3.0 的厂房行（3 字段，老版本写出来的）
-        val oldFactoryLine = ReportLayout.joinFields(listOf("2026-09-23", "10.0", append("打杂")), "|")
-        val oldRecord = ReportLayout.parseFactoryLine(oldFactoryLine, "|", decode)
-        check(oldRecord != null, "v0.3.0 的厂房行应该能读出来")
-        eq(10.0, oldRecord!!.amount, "v0.3.0 厂房行的金额应原样读出")
-        eq("打杂", oldRecord.note, "v0.3.0 厂房行的备注应原样还原")
-        eq(FactoryMode.FLAT, oldRecord.mode, "v0.3.0 厂房行应还原成整笔模式")
-
-        // v0.4.0 新写的厂房计件行
-        val newFactoryLine = ReportLayout.joinFields(
-            listOf("2026-09-23", "${0.26 * 600}", append(""), append(glove), "600", "0.26", FactoryMode.PIECE.key),
-            "|",
-        )
-        val newRecord = ReportLayout.parseFactoryLine(newFactoryLine, "|", decode)
-        check(newRecord != null, "v0.4.0 的厂房计件行应该能读出来")
-        eq(600, newRecord!!.quantity, "厂房计件行数量应为 600")
-        eq(0.26, newRecord.unitPrice, "厂房计件行单价应为 0.26")
-        eq(156.0, round2(newRecord.amount), "厂房计件行金额应为 156.00")
-        eq(FactoryMode.PIECE, newRecord.mode, "厂房计件行模式应为计件")
-
-        // 老版本 App 读到新格式的行时，前三个字段含义不变 → 金额不会算错
-        val asOldVersionSeesIt = newFactoryLine.split("|")
-        eq("2026-09-23", asOldVersionSeesIt[0], "向下兼容：日期仍在第 1 个字段")
-        eq(156.0, round2(asOldVersionSeesIt[1].toDouble()), "向下兼容：金额仍在第 2 个字段")
-        eq("", decode(asOldVersionSeesIt[2]), "向下兼容：备注仍在第 3 个字段")
+        // v0.4.0 及更早版本写下的 4 字段家里记录：字段含义没变，一行都不用改就能读出来
+        eq(602, ReportLayout.parseHomeLine("2026-09-23|Z2xvdmU=|0.26|602", "|", decode)?.quantity, "老版本家里记录应原样读出")
 
         // Base64 编解码自身也要对得上
         eq("abc", ReportLayout.decodeField(ReportLayout.encodeField("abc")), "字段编解码应可逆")
@@ -142,40 +116,6 @@ object DomainCheck {
         )
     }
 
-    private fun mergeFactory() {
-        // 计件：同一天同种类同单价 → 合并数量
-        val pieces = mergeFactoryWork(
-            listOf(
-                FactoryWork("2026-09-23", 156.0, "", "22公分绿牛", 600, 0.26, FactoryMode.PIECE),
-                FactoryWork("2026-09-23", 0.26, "", "22公分绿牛", 1, 0.26, FactoryMode.PIECE),
-            ),
-        )
-        eq(1, pieces.size, "同一天同种类的厂房计件应合并成 1 条")
-        eq(601, pieces[0].quantity, "厂房计件合并后数量应为 601 双")
-
-        // 整笔：同金额同备注合并，金额相加
-        val flats = mergeFactoryWork(
-            listOf(
-                FactoryWork("2026-09-23", 10.0, "打杂", "", 0, 0.0, FactoryMode.FLAT),
-                FactoryWork("2026-09-23", 10.0, "打杂", "", 0, 0.0, FactoryMode.FLAT),
-            ),
-        )
-        eq(1, flats.size, "同金额同备注的整笔记录应合并")
-        eq(20.0, flats[0].amount, "整笔合并后金额应为 20.00")
-
-        // 备注不同 → 不合并（通常是两件不同的活）
-        eq(
-            2,
-            mergeFactoryWork(
-                listOf(
-                    FactoryWork("2026-09-23", 10.0, "打杂", "", 0, 0.0, FactoryMode.FLAT),
-                    FactoryWork("2026-09-23", 10.0, "搬货", "", 0, 0.0, FactoryMode.FLAT),
-                ),
-            ).size,
-            "备注不同的整笔记录不应合并",
-        )
-    }
-
     // ---------------------------------------------------------------- 2. 统计与金额
 
     private fun summarizeFlow() {
@@ -184,23 +124,17 @@ object DomainCheck {
             HomeWork("2026-09-23", "22公分绿牛", 0.26, 1),
             HomeWork("2026-09-23", "22公分绿牛", 0.26, 1),
         )
-        val factory = listOf(
-            FactoryWork("2026-09-23", 15.6, "", "22公分绿牛", 60, 0.26, FactoryMode.PIECE),
-            FactoryWork("2026-09-23", 10.0, "打杂", "", 0, 0.0, FactoryMode.FLAT),
-        )
 
-        val day: DaySummary = summarizeDay(LocalDate.parse("2026-09-23"), home, factory)
+        val day: DaySummary = summarizeDay(LocalDate.parse("2026-09-23"), home)
         eq(1, day.homeRecords.size, "当天家里记录应合并为 1 条")
         eq(602, day.quantity, "当天手套数量应为 602 双")
         eq(156.52, round2(day.homeIncome), "当天手套收入应为 156.52")
-        eq(25.6, round2(day.factoryIncome), "当天厂房收入应为 25.60（计件 15.60 + 整笔 10.00）")
-        eq(182.12, round2(day.totalIncome), "当天全部劳动收入应为 182.12")
+        check(day.worked, "当天有记录就算干活")
+        check(!summarizeDay(LocalDate.parse("2026-09-24"), home).worked, "没有记录的日期不算干活")
 
-        val month = summarize(YearMonth.of(2026, 9), home, factory)
+        val month = summarize(YearMonth.of(2026, 9), home)
         eq(1, month.workedDays, "9 月只有 1 天有记录")
         eq(602, month.quantity, "9 月手套数量应为 602 双")
-        eq(1, month.factoryDays, "9 月厂房天数应为 1 天")
-        eq(60, month.factoryQuantity, "9 月厂房计件数量应为 60 双")
         eq(156.52, round2(month.homeIncome), "9 月手套收入应为 156.52")
 
         val tally = month.byGlove()
@@ -208,59 +142,28 @@ object DomainCheck {
         eq(602, tally[0].quantity, "种类合计数量应为 602 双")
         eq(156.52, round2(tally[0].income), "种类合计收入应为 156.52")
 
-        // 计件模式下「收入 = 单价 × 数量」必须自洽
-        val piece = FactoryWork("2026-09-23", 0.26 * 600, "", "22公分绿牛", 600, 0.26, FactoryMode.PIECE)
-        eq(156.0, round2(piece.amount), "厂房计件金额应等于单价 × 数量")
-
         // 跨月过滤：8 月的记录不该出现在 9 月
         val august = HomeWork("2026-08-31", "绿牛", 0.26, 10)
-        eq(602, summarize(YearMonth.of(2026, 9), home + august, factory).quantity, "9 月汇总不应包含 8 月记录")
-        eq(10, summarize(YearMonth.of(2026, 8), home + august, factory).quantity, "8 月汇总应只包含 8 月记录")
+        eq(602, summarize(YearMonth.of(2026, 9), home + august).quantity, "9 月汇总不应包含 8 月记录")
+        eq(10, summarize(YearMonth.of(2026, 8), home + august).quantity, "8 月汇总应只包含 8 月记录")
+        eq(1, summarize(YearMonth.of(2026, 8), home + august).workedDays, "8 月应只有 1 天有记录")
     }
 
-    // ------------------------------------------------- 3. 老数据 / 老备份的兼容解析
+    // ------------------------------------------------- 3. 老数据 / 脏数据的兼容解析
 
-    private fun legacyParsing() {
-        // v0.3.0 写出来的 3 字段厂房行：必须还能读出来，金额不能变
-        val legacy = ReportLayout.parseFactoryLine("2026-09-23|10.00|5q2V5omL", "|") { raw ->
-            // 这里不做真正的 Base64，只验证「解码失败就跳过」的分支不影响金额解析
-            if (raw == "5q2V5omL") "打杂" else null
-        }
-        check(legacy != null, "老格式（3 字段）厂房行应该能解析")
-        eq(10.0, legacy!!.amount, "老格式厂房行的金额应原样读出")
-        eq(FactoryMode.FLAT, legacy.mode, "老格式厂房行应还原成整笔模式")
-        eq("打杂", legacy.note, "老格式厂房行的备注应原样读出")
-        eq(0, legacy.quantity, "老格式厂房行没有数量")
-
-        // v0.4.0 的 7 字段行
-        val current = ReportLayout.parseFactoryLine("2026-09-23|156.0|note|glove|600|0.26|piece", "|") { it }
-        check(current != null, "新格式（7 字段）厂房行应该能解析")
-        eq(600, current!!.quantity, "新格式厂房行数量应为 600")
-        eq(0.26, current.unitPrice, "新格式厂房行单价应为 0.26")
-        eq(FactoryMode.PIECE, current.mode, "新格式厂房行模式应为计件")
-
-        // 模式字段缺失 / 非法 → 退回整笔，保证金额安全
-        eq(
-            FactoryMode.FLAT,
-            ReportLayout.parseFactoryLine("2026-09-23|1|n||0|0|", "|") { it }!!.mode,
-            "模式字段为空应退回整笔",
-        )
-        eq(
-            FactoryMode.FLAT,
-            ReportLayout.parseFactoryLine("2026-09-23|1|n||0|0|weird", "|") { it }!!.mode,
-            "模式字段非法应退回整笔",
-        )
-
-        // 字段太少的垃圾行应被跳过，而不是抛异常
-        check(ReportLayout.parseFactoryLine("2026-09-23|10", "|") { it } == null, "字段不足的厂房行应跳过")
-        check(ReportLayout.parseFactoryLine("", "|") { it } == null, "空行应跳过")
-
+    private fun parsing() {
         // 家里记录：4 字段
         val home = ReportLayout.parseHomeLine("2026-09-23|glove|0.26|602", "|") { it }
         check(home != null, "家里记录应能解析")
         eq(602, home!!.quantity, "家里记录数量应为 602")
         eq(156.52, round2(home.income), "家里记录收入应为 156.52")
+
+        // 字段不足 / 数字非法 / 空日期 → 跳过，而不是抛异常
         check(ReportLayout.parseHomeLine("2026-09-23|glove|0.26", "|") { it } == null, "家里记录字段不足应跳过")
+        check(ReportLayout.parseHomeLine("2026-09-23|glove|abc|2", "|") { it } == null, "单价非法应跳过")
+        check(ReportLayout.parseHomeLine("2026-09-23|glove|0.26|x", "|") { it } == null, "数量非法应跳过")
+        check(ReportLayout.parseHomeLine("|glove|0.26|2", "|") { it } == null, "空日期应跳过")
+        check(ReportLayout.parseHomeLine("2026-09-23|glove|0.26|2", "|") { null } == null, "Base64 解码失败应跳过")
 
         check(ReportLayout.isIsoDate("2026-09-23"), "ISO 日期应被接受")
         check(!ReportLayout.isIsoDate("2026/09/23"), "非 ISO 日期应被拒绝")
@@ -278,77 +181,65 @@ object DomainCheck {
             HomeWork("2026-09-23", "22公分绿牛超长的手套名称测试用", 0.26, 602),
             HomeWork("2026-09-24", "短名", 1.0, 123456),
         )
-        val factory = listOf(
-            FactoryWork("2026-09-23", 156.52, "备注也写得很长很长很长很长很长", "22公分绿牛", 602, 0.26, FactoryMode.PIECE),
-            FactoryWork("2026-09-23", 10.0, "打杂", "", 0, 0.0, FactoryMode.FLAT),
-        )
-        val summary = summarize(YearMonth.of(2026, 9), home, factory)
+        val summary = summarize(YearMonth.of(2026, 9), home)
+        val report = ReportLayout.plan(summary)
 
-        ReportScope.entries.forEach { scope ->
-            val report = ReportLayout.plan(summary, scope)
-            check(report.blocks.isNotEmpty(), "$scope 报表应该至少有一块内容")
-            check(report.height > ReportLayout.TITLE_BAR, "$scope 报表高度应该大于标题栏")
+        check(report.blocks.isNotEmpty(), "报表应该至少有一块内容")
+        check(report.height > ReportLayout.TITLE_BAR, "报表高度应该大于标题栏")
 
-            report.blocks.forEach { block ->
-                val spec = block.table ?: return@forEach
-                eq(
-                    spec.headers.size,
-                    spec.aligns.size,
-                    "$scope / ${spec.title}：对齐配置数量必须与列数一致",
-                )
+        report.blocks.forEach { block ->
+            val spec = block.table ?: return@forEach
+            eq(spec.headers.size, spec.aligns.size, "${spec.title}：对齐配置数量必须与列数一致")
 
-                val bounds = ReportLayout.columns(spec.weights)
+            val bounds = ReportLayout.columns(spec.weights)
 
-                // 列边界必须在内容区内：这一条直接对应「右边被截断」的 bug
-                eq(ReportLayout.contentLeft, bounds.first().start, "$scope / ${spec.title}：第一列应从内容区左侧开始")
-                check(
-                    bounds.last().endInclusive <= ReportLayout.contentRight + 0.01f,
-                    "$scope / ${spec.title}：最后一列越过了内容区右边界",
-                )
-                check(
-                    bounds.last().endInclusive < ReportLayout.PAGE_WIDTH - 20f,
-                    "$scope / ${spec.title}：最后一列太贴近画布边缘，可能被显示端裁掉",
-                )
+            // 列边界必须在内容区内：这一条直接对应「右边被截断」的 bug
+            eq(ReportLayout.contentLeft, bounds.first().start, "${spec.title}：第一列应从内容区左侧开始")
+            check(
+                bounds.last().endInclusive <= ReportLayout.contentRight + 0.01f,
+                "${spec.title}：最后一列越过了内容区右边界",
+            )
+            check(
+                bounds.last().endInclusive < ReportLayout.PAGE_WIDTH - 20f,
+                "${spec.title}：最后一列太贴近画布边缘，可能被显示端裁掉",
+            )
 
-                // 每一格的文字必须放得进那一列（先缩字号、再截断的兜底逻辑要真的生效）
-                (spec.rows + listOf(spec.headers)).forEach { row ->
-                    row.forEachIndexed { column, text ->
-                        if (text.isEmpty()) return@forEachIndexed
-                        val width = bounds[column].endInclusive - bounds[column].start - ReportLayout.CELL_INSET * 2
-                        val fitted = ReportLayout.fit(text, width, measure = { value, size ->
-                            ReportLayout.estimateWidth(value, size)
-                        })
-                        check(
-                            fitted.text.isEmpty() || ReportLayout.estimateWidth(fitted.text, fitted.size) <= width + 0.01f,
-                            "$scope / ${spec.title}：第 ${column + 1} 列文字「$text」放不下",
-                        )
-                    }
-                }
-
-                // 合计行每一格也必须落在它声明的列区间内
-                spec.footer?.forEach { cell ->
-                    check(cell.columns.first in 0 until spec.columnCount, "$scope / ${spec.title}：合计行起始列越界")
-                    check(cell.columns.last in 0 until spec.columnCount, "$scope / ${spec.title}：合计行结束列越界")
-                    val spanStart = bounds[cell.columns.first].start
-                    val spanEnd = bounds[cell.columns.last].endInclusive
-                    check(spanEnd > spanStart, "$scope / ${spec.title}：合计行区间宽度必须为正")
-                    val width = spanEnd - spanStart - ReportLayout.CELL_INSET * 2
-                    val fitted = ReportLayout.fit(cell.text, width, measure = { value, size ->
+            // 每一格的文字必须放得进那一列（先缩字号、再截断的兜底逻辑要真的生效）
+            (spec.rows + listOf(spec.headers)).forEach { row ->
+                row.forEachIndexed { column, text ->
+                    if (text.isEmpty()) return@forEachIndexed
+                    val width = bounds[column].endInclusive - bounds[column].start - ReportLayout.CELL_INSET * 2
+                    val fitted = ReportLayout.fit(text, width, measure = { value, size ->
                         ReportLayout.estimateWidth(value, size)
                     })
                     check(
                         fitted.text.isEmpty() || ReportLayout.estimateWidth(fitted.text, fitted.size) <= width + 0.01f,
-                        "$scope / ${spec.title}：合计行文字「${cell.text}」放不下",
+                        "${spec.title}：第 ${column + 1} 列文字「$text」放不下",
                     )
                 }
             }
+
+            // 合计行每一格也必须落在它声明的列区间内
+            spec.footer?.forEach { cell ->
+                check(cell.columns.first in 0 until spec.columnCount, "${spec.title}：合计行起始列越界")
+                check(cell.columns.last in 0 until spec.columnCount, "${spec.title}：合计行结束列越界")
+                val spanStart = bounds[cell.columns.first].start
+                val spanEnd = bounds[cell.columns.last].endInclusive
+                check(spanEnd > spanStart, "${spec.title}：合计行区间宽度必须为正")
+                val width = spanEnd - spanStart - ReportLayout.CELL_INSET * 2
+                val fitted = ReportLayout.fit(cell.text, width, measure = { value, size ->
+                    ReportLayout.estimateWidth(value, size)
+                })
+                check(
+                    fitted.text.isEmpty() || ReportLayout.estimateWidth(fitted.text, fitted.size) <= width + 0.01f,
+                    "${spec.title}：合计行文字「${cell.text}」放不下",
+                )
+            }
         }
 
-        // 「合计 N 笔」这类文字必须留在最后一列以外，不能顶到图片最右边
-        val all = ReportLayout.plan(summary, ReportScope.ALL)
-        val homeTable = all.blocks.mapNotNull { it.table }.first { it.title.startsWith("家里手套") }
-        val bounds = ReportLayout.columns(homeTable.weights)
-        val footerCount = homeTable.footer!!.first()
+        // 「合计 N 笔」这类文字必须留在最后两列以外，不能顶到图片最右边
+        val table = report.blocks.mapNotNull { it.table }.first()
+        val footerCount = table.footer!!.first()
         check(footerCount.columns.last <= 1, "「合计 N 笔」应落在左侧列，不能挤到最右列")
 
         // 超长文字应被截断并加省略号
@@ -358,15 +249,52 @@ object DomainCheck {
             measure = { value -> ReportLayout.estimateWidth(value, ReportLayout.FONT_SIZE) },
         )
         check(ellipsized.endsWith("…"), "超长文字应被截断并加省略号")
+    }
 
-        // 空报表也不该崩，而且不该画空表：没记录时只有汇总与页脚
-        val empty = summarize(YearMonth.of(2026, 1), emptyList(), emptyList())
-        val emptyReport = ReportLayout.plan(empty, ReportScope.ALL)
-        check(emptyReport.blocks.isNotEmpty(), "空月份也应有汇总与页脚")
-        check(emptyReport.blocks.none { it.table != null }, "空月份不应画出空表格")
+    /**
+     * 图里**只能有「家里手套计件明细」这一张表**：
+     * 既没有「各手套种类汇总」，也没有按天的汇总表；空月份也不崩。
+     */
+    private fun reportHasOnlyDetailTable() {
+        val home = listOf(
+            HomeWork("2026-09-23", "22公分绿牛", 0.26, 602),
+            HomeWork("2026-09-24", "加绒劳保", 1.2, 30),
+        )
+        val summary = summarize(YearMonth.of(2026, 9), home)
+        val blocks = ReportLayout.plan(summary).blocks
+        val tables = blocks.mapNotNull { it.table }
+
+        eq(1, tables.size, "导出的图里应该只有一张表")
+        check(tables[0].title.startsWith("家里手套计件明细"), "那张表必须是「家里手套计件明细」")
         check(
-            emptyReport.blocks.any { it.kind == ReportLayout.Block.Kind.TOTALS },
-            "空月份仍应有收入汇总区",
+            tables.none { it.title.contains("各手套种类") },
+            "「各手套种类汇总」不该再出现在图里",
+        )
+        check(
+            tables.none { it.title.contains("每日汇总") },
+            "「每日汇总」不该再出现在图里",
+        )
+        eq(2, tables[0].rows.size, "两个不同日期的手套种类应各占一行")
+
+        // 合计行给出笔数、双数与金额
+        val footer = tables[0].footer!!
+        eq("合计 2 笔", footer[0].text, "合计行第一格应是笔数")
+        eq("632 双", footer[1].text, "合计行应给出总双数")
+        eq("192.52", footer[3].text, "合计行应给出总金额")
+
+        // 表头不能被误当成「各手套种类」
+        check(tables[0].headers.contains("手套种类"), "明细表仍应有「手套种类」列")
+
+        // 空月份：仍然画这张表（写一行说明），不会崩也不会多出别的表
+        val empty = summarize(YearMonth.of(2026, 1), emptyList())
+        val emptyBlocks = ReportLayout.plan(empty).blocks
+        val emptyTables = emptyBlocks.mapNotNull { it.table }
+        eq(1, emptyTables.size, "空月份也应只有这一张表")
+        check(emptyTables[0].rows.isEmpty(), "空月份的表没有数据行")
+        eq("本月没有手套记录", emptyTables[0].emptyText, "空月份应写一行说明")
+        check(
+            emptyBlocks.any { it.kind == ReportLayout.Block.Kind.FOOTER },
+            "空月份仍应有页脚",
         )
     }
 

@@ -18,8 +18,8 @@ android {
         // targetSdk 保持与 compileSdk 一致；如果发现新系统上有行为变化，
         // 可以单独把 targetSdk 降回 35，两者不必相同。
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
     }
 
     // release 包必须签名才能安装。这里用 Android 的 debug 签名，让

@@ -23,11 +23,7 @@ class WorkViewModel(application: Application) : AndroidViewModel(application) {
 
     var gloves by mutableStateOf(store.gloves())
         private set
-    var factoryGloves by mutableStateOf(store.factoryGloves())
-        private set
     var homeWork by mutableStateOf(store.homeWork())
-        private set
-    var factoryWork by mutableStateOf(store.factoryWork())
         private set
 
     /**
@@ -37,7 +33,7 @@ class WorkViewModel(application: Application) : AndroidViewModel(application) {
     var upgradeReport by mutableStateOf(readUpgradeReport())
         private set
 
-    private fun persist() = store.save(gloves, factoryGloves, homeWork, factoryWork)
+    private fun persist() = store.save(gloves, homeWork)
 
     /** 更新数据后落盘，并顺手刷新自动备份。 */
     private fun persistAndBackup() {
@@ -46,8 +42,6 @@ class WorkViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun gloveByName(name: String): GloveType? = gloves.firstOrNull { it.name == name }
-
-    fun factoryGloveByName(name: String): GloveType? = factoryGloves.firstOrNull { it.name == name }
 
     /** 新建或覆盖同名手套的默认单价。改名时同步更新已有记录里的手套名。 */
     fun upsertGlove(previousName: String?, name: String, price: Double) {
@@ -66,26 +60,6 @@ class WorkViewModel(application: Application) : AndroidViewModel(application) {
     /** 删除手套种类。历史记录保留（收入按当时单价快照计算），只是不再出现在选择列表里。 */
     fun deleteGlove(name: String) {
         gloves = gloves.filterNot { it.name == name }
-        persistAndBackup()
-    }
-
-    /** 厂房手套库：新建 / 改价 / 改名。改名时同步更新已有厂房计件记录。 */
-    fun upsertFactoryGlove(previousName: String?, name: String, price: Double) {
-        val trimmed = name.trim()
-        if (trimmed.isEmpty() || price < 0) return
-        factoryGloves =
-            (factoryGloves.filterNot { it.name == trimmed || it.name == previousName } + GloveType(trimmed, price))
-                .sortedBy { it.name }
-        if (previousName != null && previousName != trimmed) {
-            factoryWork = factoryWork.map {
-                if (it.gloveName == previousName) it.copy(gloveName = trimmed) else it
-            }
-        }
-        persistAndBackup()
-    }
-
-    fun deleteFactoryGlove(name: String) {
-        factoryGloves = factoryGloves.filterNot { it.name == name }
         persistAndBackup()
     }
 
@@ -112,65 +86,21 @@ class WorkViewModel(application: Application) : AndroidViewModel(application) {
         persistAndBackup()
     }
 
-    /** 厂房计件：收入 = 单价 × 数量，自动算出来存进记录。 */
-    fun addFactoryPiece(date: LocalDate, glove: GloveType, quantity: Int, note: String = "") {
-        if (quantity <= 0) return
-        factoryWork = factoryWork + FactoryWork(
-            date = date.toString(),
-            amount = glove.unitPrice * quantity,
-            note = note.trim(),
-            gloveName = glove.name,
-            quantity = quantity,
-            unitPrice = glove.unitPrice,
-            mode = FactoryMode.PIECE,
-        )
-        persistAndBackup()
-    }
-
-    /** 厂房整笔：直接记当天总收入。 */
-    fun addFactoryFlat(date: LocalDate, amount: Double, note: String) {
-        if (amount <= 0) return
-        factoryWork = factoryWork + FactoryWork(
-            date = date.toString(),
-            amount = amount,
-            note = note.trim(),
-            mode = FactoryMode.FLAT,
-        )
-        persistAndBackup()
-    }
-
-    /** 修改一条厂房记录：整笔与计件共用，切换模式时字段一并调整。 */
-    fun updateFactory(target: FactoryWork, replacement: FactoryWork) {
-        val index = factoryWork.indexOf(target)
-        if (index < 0) return
-        factoryWork = factoryWork.toMutableList().also { it[index] = replacement }
-        persistAndBackup()
-    }
-
-    fun deleteFactory(target: FactoryWork) {
-        val index = factoryWork.indexOf(target)
-        if (index < 0) return
-        factoryWork = factoryWork.toMutableList().also { it.removeAt(index) }
-        persistAndBackup()
-    }
-
     /** 覆盖式恢复：用备份文件里的全部数据替换当前数据。 */
     fun replaceAll(snapshot: DataSnapshot) {
         gloves = snapshot.gloves.sortedBy { it.name }
-        factoryGloves = snapshot.factoryGloves.sortedBy { it.name }
         homeWork = snapshot.home.sortedBy { it.date }
-        factoryWork = snapshot.factory.sortedBy { it.date }
         persistAndBackup()
     }
 
     /** 按月份汇总，记录已按天合并。 */
-    fun summaryOf(month: YearMonth): MonthSummary = summarize(month, homeWork, factoryWork)
+    fun summaryOf(month: YearMonth): MonthSummary = summarize(month, homeWork)
 
     /** 某一天的汇总（已合并），用于记工页与月历点选后展开当天明细。 */
-    fun summaryOfDate(date: LocalDate): DaySummary = summarizeDay(date, homeWork, factoryWork)
+    fun summaryOfDate(date: LocalDate): DaySummary = summarizeDay(date, homeWork)
 
     /** 当前的完整数据快照，供导出 / 自动备份使用。 */
-    fun snapshot(): DataSnapshot = DataSnapshot(gloves, factoryGloves, homeWork, factoryWork)
+    fun snapshot(): DataSnapshot = DataSnapshot(gloves, homeWork)
 
     // ------------------------------------------------------------ 数据安全
 

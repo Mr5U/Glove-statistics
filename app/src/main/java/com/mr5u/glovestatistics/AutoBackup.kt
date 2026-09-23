@@ -104,12 +104,9 @@ object AutoBackup {
         val raw = listOf(
             AppInfo.VERSION_NAME,
             snapshot.gloves.size.toString(),
-            snapshot.factoryGloves.size.toString(),
             snapshot.home.size.toString(),
-            snapshot.factory.size.toString(),
             snapshot.home.sumOf { it.quantity }.toString(),
             snapshot.home.sumOf { it.income }.toString(),
-            snapshot.factory.sumOf { it.amount }.toString(),
             Build.VERSION.SDK_INT.toString(),
         ).joinToString("#")
         return raw.hashCode().toUInt().toString(16)

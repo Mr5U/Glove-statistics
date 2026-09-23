@@ -14,7 +14,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,12 +32,7 @@ import java.time.format.DateTimeFormatter
 /**
  * 手套库：保存「名称 + 默认单价」。
  *
- * 分两本独立的库：
- * - **家里手套**：家里的计件账用，单价进「手套收入」；
- * - **厂房手套**：厂房按件计酬用，单价只影响厂房账。
- *
- * 分成两本是为了避免「厂房的手套和家里的不是同一批、单价也不一样」时互相串价。
- * 两边的规则一样：改价只影响以后的新记录；删掉种类只让它不再出现在选择列表里，
+ * 改价只影响以后的新记录；删掉种类只让它不再出现在选择列表里，
  * 历史收入按当天的单价快照照常保留。
  */
 @Composable
@@ -46,35 +40,18 @@ fun LibraryScreen(
     vm: WorkViewModel,
     modifier: Modifier = Modifier,
 ) {
-    var showFactoryLibrary by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<GloveType?>(null) }
     var deleting by remember { mutableStateOf<GloveType?>(null) }
 
-    val gloves = if (showFactoryLibrary) vm.factoryGloves else vm.gloves
-    val libraryTitle = if (showFactoryLibrary) "厂房手套库" else "家里手套库"
-    val color = if (showFactoryLibrary) FactoryOrange else HomeGreen
+    val gloves = vm.gloves
 
     LazyColumn(
         modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
-            ModeToggle(
-                options = listOf("home" to "⌂ 家里手套", "factory" to "▦ 厂房手套"),
-                selectedKey = if (showFactoryLibrary) "factory" else "home",
-                onSelect = { showFactoryLibrary = it == "factory" },
-            )
-        }
-
-        item {
-            Hint(
-                if (showFactoryLibrary) {
-                    "厂房按件计酬时用的手套种类与单价。厂房记工的「按件计酬」模式会用到这份列表。"
-                } else {
-                    "家里做手套的种类与默认单价。记工时直接选，不用重复输入。"
-                },
-            )
+            Hint("家里做手套的种类与默认单价。记工时直接选，不用重复输入。")
         }
 
         item {
@@ -88,10 +65,8 @@ fun LibraryScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 ) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("$libraryTitle 还是空的", fontWeight = FontWeight.Medium)
-                        Hint(
-                            if (showFactoryLibrary) "例如「22 公分绿牛」0.26 元 / 双。" else "例如「加绒劳保手套」1.20 元 / 双。",
-                        )
+                        Text("手套库还是空的", fontWeight = FontWeight.Medium)
+                        Hint("例如「加绒劳保手套」1.20 元 / 双。")
                         Button(onClick = { creating = true }, modifier = Modifier.fillMaxWidth()) {
                             Text("＋ 新建手套种类")
                         }
@@ -100,11 +75,7 @@ fun LibraryScreen(
             }
         } else {
             items(gloves, key = { it.name }) { glove ->
-                val used = if (showFactoryLibrary) {
-                    vm.factoryWork.count { it.gloveName == glove.name }
-                } else {
-                    vm.homeWork.count { it.gloveName == glove.name }
-                }
+                val used = vm.homeWork.count { it.gloveName == glove.name }
                 Card(Modifier.fillMaxWidth()) {
                     Row(
                         Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
@@ -135,14 +106,10 @@ fun LibraryScreen(
         GloveDialog(
             initial = null,
             existing = gloves,
-            title = if (showFactoryLibrary) "厂房手套种类" else "手套种类",
+            title = "手套种类",
             onDismiss = { creating = false },
             onSave = { name, price ->
-                if (showFactoryLibrary) {
-                    vm.upsertFactoryGlove(previousName = null, name = name, price = price)
-                } else {
-                    vm.upsertGlove(previousName = null, name = name, price = price)
-                }
+                vm.upsertGlove(previousName = null, name = name, price = price)
                 creating = false
             },
         )
@@ -152,25 +119,17 @@ fun LibraryScreen(
         GloveDialog(
             initial = target,
             existing = gloves,
-            title = if (showFactoryLibrary) "厂房手套种类" else "手套种类",
+            title = "手套种类",
             onDismiss = { editing = null },
             onSave = { name, price ->
-                if (showFactoryLibrary) {
-                    vm.upsertFactoryGlove(previousName = target.name, name = name, price = price)
-                } else {
-                    vm.upsertGlove(previousName = target.name, name = name, price = price)
-                }
+                vm.upsertGlove(previousName = target.name, name = name, price = price)
                 editing = null
             },
         )
     }
 
     deleting?.let { target ->
-        val used = if (showFactoryLibrary) {
-            vm.factoryWork.count { it.gloveName == target.name }
-        } else {
-            vm.homeWork.count { it.gloveName == target.name }
-        }
+        val used = vm.homeWork.count { it.gloveName == target.name }
         ConfirmDialog(
             title = "删除「${target.name}」？",
             message = if (used > 0) {
@@ -181,7 +140,7 @@ fun LibraryScreen(
             confirmLabel = "删除",
             onDismiss = { deleting = null },
             onConfirm = {
-                if (showFactoryLibrary) vm.deleteFactoryGlove(target.name) else vm.deleteGlove(target.name)
+                vm.deleteGlove(target.name)
                 deleting = null
             },
         )
@@ -189,9 +148,8 @@ fun LibraryScreen(
 }
 
 /**
- * 本月页：收入汇总 + 每日清单 + 导出入口。
+ * 本月页：收入汇总 + 每日清单 + 各手套种类 + 导出入口。
  *
- * 手套收入和厂房收入分开列，最后给出两者相加的「全部劳动收入」；
  * 明细里的记录都按天合并过，所以看到的就是每天的真实合计。
  */
 @Composable
@@ -209,7 +167,6 @@ fun SummaryScreen(
 
     val summary = vm.summaryOf(month)
     val tallies = summary.byGlove()
-    val factoryTallies = summary.byFactoryGlove()
 
     LazyColumn(
         modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -225,25 +182,12 @@ fun SummaryScreen(
         }
 
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                StatCard(
-                    title = "家里手套收入",
-                    amount = summary.homeIncome,
-                    detail = "${summary.homeDays} 天 · 共 ${summary.quantity} 双 · ${summary.days.count { it.workedAtHome }} 个记工日",
-                    color = HomeGreen,
-                )
-                StatCard(
-                    title = "厂房工作收入",
-                    amount = summary.factoryIncome,
-                    detail = if (summary.factoryQuantity > 0) {
-                        "${summary.factoryDays} 天 · 计件 ${summary.factoryQuantity} 双 · 独立成账"
-                    } else {
-                        "${summary.factoryDays} 天 · 独立成账，不计入手套收入"
-                    },
-                    color = FactoryOrange,
-                )
-                TotalRow("本月全部劳动收入", summary.totalIncome)
-            }
+            StatCard(
+                title = "家里手套收入",
+                amount = summary.homeIncome,
+                detail = "${summary.workedDays} 天 · 共 ${summary.quantity} 双",
+                color = HomeGreen,
+            )
         }
 
         item {
@@ -279,25 +223,12 @@ fun SummaryScreen(
                         Column(Modifier.weight(1f)) {
                             Text(Fmt.monthDay(day.date), fontWeight = FontWeight.Medium)
                             Text(
-                                buildString {
-                                    if (day.workedAtHome) append("手套 ${day.quantity} 双")
-                                    if (day.workedAtHome && day.workedAtFactory) append("　·　")
-                                    if (day.workedAtFactory) append("厂房 ${Fmt.yuan(day.factoryIncome)}")
-                                },
+                                "${day.homeRecords.size} 笔 · ${day.quantity} 双",
                                 color = MutedInk,
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(Fmt.yuan(day.totalIncome), fontWeight = FontWeight.Bold)
-                            if (day.homeIncome > 0 && day.factoryIncome > 0) {
-                                Text(
-                                    "手套 ${Fmt.money(day.homeIncome)}",
-                                    color = MutedInk,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
+                        Text(Fmt.yuan(day.homeIncome), fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -350,31 +281,6 @@ fun SummaryScreen(
             }
         }
 
-        if (factoryTallies.isNotEmpty()) {
-            item {
-                SectionTitle("▦ 厂房计件种类", "按收入排序", FactoryOrange)
-            }
-            items(factoryTallies, key = { it.name }) { tally ->
-                Card(Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column {
-                            Text(tally.name, fontWeight = FontWeight.Medium)
-                            Text(
-                                "${tally.quantity} 双　·　均价 ${Fmt.yuan(tally.averagePrice)} / 双",
-                                color = MutedInk,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        Text(Fmt.yuan(tally.income), color = FactoryOrange, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-
         item { HorizontalDivider(Modifier.padding(top = 6.dp)) }
 
         item {
@@ -402,8 +308,8 @@ fun SummaryScreen(
         ExportDialog(
             month = month,
             onDismiss = { showExport = false },
-            onExportPng = { scope ->
-                fileActions.exportPng(scope, summary)
+            onExportPng = {
+                fileActions.exportPng(summary)
                 onMessage("正在生成图片，请选择保存位置…")
                 showExport = false
             },
@@ -422,7 +328,7 @@ fun SummaryScreen(
     if (confirmRestore) {
         ConfirmDialog(
             title = "从备份恢复？",
-            message = "恢复会用备份文件里的内容替换当前手机上的全部数据（家里手套库、厂房手套库、手套记录、厂房记录）。如果现在有还没备份的新记录，建议先导出一份 XML 再恢复。",
+            message = "恢复会用备份文件里的内容替换当前手机上的全部数据（手套库、手套记录）。如果现在有还没备份的新记录，建议先导出一份 XML 再恢复。",
             confirmLabel = "选择备份文件",
             onDismiss = { confirmRestore = false },
             onConfirm = {
@@ -516,41 +422,35 @@ private fun StoragePanel(
     }
 }
 
-/** 导出方式选择：先选 PNG 还是 XML，选了 PNG 再选范围。 */
+/**
+ * 导出方式选择：PNG 计件明细图，或 XML 完整备份。
+ *
+ * PNG 不再需要选范围：厂房工作下线后只剩一本账，
+ * 图里**只有「家里手套计件明细」一张表**，不再带「各手套种类汇总」。
+ */
 @Composable
 private fun ExportDialog(
     month: YearMonth,
     onDismiss: () -> Unit,
-    onExportPng: (ReportScope) -> Unit,
+    onExportPng: () -> Unit,
     onExportXml: () -> Unit,
     onRestore: () -> Unit,
 ) {
-    var scope by remember { mutableStateOf(ReportScope.ALL) }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("导出 ${Fmt.month(month)}") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("PNG 统计图 —— 适合发微信或存相册", fontWeight = FontWeight.Medium)
-                Hint("同一天同一种手套已经合并成一行，并额外给出「每日汇总」表。选择要导出哪部分：")
-                ReportScope.entries.forEach { option ->
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(selected = scope == option, onClick = { scope = option })
-                        Text(option.label)
-                    }
-                }
-                Button(onClick = { onExportPng(scope) }, modifier = Modifier.fillMaxWidth()) {
+                Text("PNG 计件明细图 —— 适合发微信或存相册", fontWeight = FontWeight.Medium)
+                Hint("图里只有「家里手套计件明细」一张表：同一天同一种手套已经合并成一行，数量和金额收在表格的合计行里。")
+                Button(onClick = onExportPng, modifier = Modifier.fillMaxWidth()) {
                     Text("导出 PNG 图片")
                 }
 
                 HorizontalDivider()
 
                 Text("XML 完整备份 —— 适合换手机或长期存档", fontWeight = FontWeight.Medium)
-                Hint("包含全部手套种类、所有月份的手套记录与厂房记录，恢复时会原样还原。")
+                Hint("包含全部手套种类与所有月份的手套记录，恢复时会原样还原。")
                 Button(onClick = onExportXml, modifier = Modifier.fillMaxWidth()) {
                     Text("导出 XML 备份")
                 }

@@ -93,8 +93,8 @@ package com.mr5u.glovestatistics
 object BuildConfig {
     const val APPLICATION_ID: String = "com.mr5u.glovestatistics"
     const val BUILD_TYPE: String = "release"
-    const val VERSION_CODE: Int = 4
-    const val VERSION_NAME: String = "0.4.0"
+    const val VERSION_CODE: Int = 5
+    const val VERSION_NAME: String = "0.5.0"
 }
 '@
 Set-Content -LiteralPath $stubFile -Value $stubSource -Encoding UTF8
